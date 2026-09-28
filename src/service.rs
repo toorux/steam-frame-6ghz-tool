@@ -1,5 +1,6 @@
 //! Optional, device-triggered service. No installation or writes on normal UI startup.
 use crate::{backend, logs, protocol::Result};
+use sha2::{Digest, Sha256};
 use std::{
     ffi::{OsStr, OsString, c_void},
     fs::{self, OpenOptions},
@@ -164,6 +165,10 @@ pub struct State {
     pub running: bool,
     pub enabled: bool,
     pub exit_code: u32,
+    pub needs_update: bool,
+}
+fn different_binary(installed: &[u8], current: &[u8]) -> bool {
+    installed.len() != current.len() || Sha256::digest(installed) != Sha256::digest(current)
 }
 pub fn state() -> Result<State> {
     let manager = Sc::manager(SC_MANAGER_CONNECT)?;
@@ -178,13 +183,32 @@ pub fn state() -> Result<State> {
         "读取服务运行状态",
     )?;
     let running = status.dwCurrentState != SERVICE_STOPPED;
+    let installed = fs::read(dir.join(EXE)).map_err(|e| format!("读取服务程序副本失败：{e}"))?;
+    let current = fs::read(std::env::current_exe().map_err(|e| e.to_string())?)
+        .map_err(|e| format!("读取当前程序失败：{e}"))?;
     Ok(State {
         installed: true,
         paused: !running && dir.join(PAUSED).exists(),
         running,
         enabled,
         exit_code: status.dwWin32ExitCode,
+        needs_update: different_binary(&installed, &current),
     })
+}
+
+pub fn reinstall() -> Result<String> {
+    let current = state()?;
+    if !current.installed {
+        return Err("自动应用未安装".into());
+    }
+    if current.running || current.paused {
+        return Err("服务正在处理或已暂停；先查看日志并人工复查，暂不更新".into());
+    }
+    if !current.needs_update {
+        return Ok("服务副本已是当前版本，无需更新".into());
+    }
+    uninstall()?;
+    install().map_err(|e| format!("旧服务已卸载，但安装新版失败：{e}"))
 }
 
 fn secure_directory(dir: &Path) -> Result<()> {
@@ -664,6 +688,11 @@ pub fn dispatch() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn service_copy_mismatch_is_detected() {
+        assert!(!different_binary(b"same", b"same"));
+        assert!(different_binary(b"old", b"new"));
+    }
     #[test]
     fn access_errors_explain_how_to_restart_as_administrator() {
         for code in [ERROR_ACCESS_DENIED, ERROR_PRIVILEGE_NOT_HELD] {

@@ -3,11 +3,15 @@
 compile_error!("This application targets x86_64 Windows only.");
 
 mod backend;
+mod frame;
+mod frame_ui;
 mod logs;
 mod protocol;
 mod service;
 mod ui_log;
+mod updater;
 use backend::{Adapter, Report};
+use base64::Engine as _;
 use eframe::egui::{self, Color32, RichText};
 use std::{
     fs,
@@ -55,6 +59,8 @@ struct App {
     errors_only: bool,
     confirm: Option<Adapter>,
     confirm_auto: Option<bool>,
+    confirm_service_update: bool,
+    confirm_update: bool,
     error_popup: Option<String>,
     uncertain: bool,
     demo: bool,
@@ -66,6 +72,10 @@ struct App {
     next_service_refresh: Instant,
     service_epoch: u64,
     log_dir: Option<PathBuf>,
+    frame_ui: Option<frame_ui::FrameUi>,
+    github_mark: Option<egui::TextureHandle>,
+    update_receiver: Option<Receiver<Result<Option<updater::Release>, String>>>,
+    available_update: Option<updater::Release>,
 }
 impl App {
     fn empty(demo: bool) -> Self {
@@ -85,6 +95,8 @@ impl App {
             errors_only: false,
             confirm: None,
             confirm_auto: None,
+            confirm_service_update: false,
+            confirm_update: false,
             error_popup: None,
             uncertain: false,
             demo,
@@ -96,11 +108,16 @@ impl App {
             next_service_refresh: Instant::now(),
             service_epoch: 0,
             log_dir: None,
+            frame_ui: None,
+            github_mark: None,
+            update_receiver: None,
+            available_update: None,
         }
     }
     fn new(cc: &eframe::CreationContext<'_>, demo: bool) -> Self {
         setup_style(&cc.egui_ctx);
         let mut app = Self::empty(demo);
+        app.github_mark = Some(load_github_mark(&cc.egui_ctx));
         app.record(&format!(
             "Steam Frame 6 GHz 设置工具 {}",
             env!("CARGO_PKG_VERSION")
@@ -114,6 +131,13 @@ impl App {
             );
         }
         app.refresh();
+        if !demo {
+            let (tx, rx) = mpsc::channel();
+            app.update_receiver = Some(rx);
+            thread::spawn(move || {
+                let _ = tx.send(updater::check());
+            });
+        }
         app
     }
     fn record(&mut self, text: &str) {
@@ -200,6 +224,37 @@ impl App {
             };
             let _ = tx.send(Event::AutoApply(result, service::state()));
         });
+    }
+    fn update_service(&mut self) {
+        if self.receiver.is_some() {
+            return;
+        }
+        self.confirm_service_update = false;
+        self.busy_status("正在更新自动应用服务…");
+        self.record("用户确认更新自动应用服务副本");
+        let (tx, rx) = mpsc::channel();
+        self.receiver = Some(rx);
+        thread::spawn(move || {
+            let _ = tx.send(Event::AutoApply(service::reinstall(), service::state()));
+        });
+    }
+    fn poll_update(&mut self) {
+        match self.update_receiver.as_ref().map(|rx| rx.try_recv()) {
+            Some(Ok(result)) => {
+                self.update_receiver = None;
+                match result {
+                    Ok(release) => {
+                        self.available_update = release;
+                    }
+                    Err(e) => self.record(&format!("[WARN] 检查更新失败，不影响本地功能：{e}")),
+                }
+            }
+            Some(Err(mpsc::TryRecvError::Disconnected)) => {
+                self.update_receiver = None;
+                self.record("[WARN] 检查更新线程意外结束，不影响本地功能。");
+            }
+            _ => {}
+        }
     }
     fn update_auto_state(&mut self, result: protocol::Result<service::State>) {
         match result {
@@ -451,7 +506,11 @@ impl App {
         }
     }
     fn confirming(&self) -> bool {
-        self.confirm.is_some() || self.confirm_auto.is_some() || self.error_popup.is_some()
+        self.confirm.is_some()
+            || self.confirm_auto.is_some()
+            || self.confirm_service_update
+            || self.confirm_update
+            || self.error_popup.is_some()
     }
     fn rebuild_logs(&mut self) {
         if !self.logs_dirty {
@@ -559,7 +618,7 @@ impl App {
                 ui.add_space(6.0);
                 ui.colored_label(
                     AMBER,
-                    "原国家码未知（00 00）。可手动确认设置，完成后将严格复查；自动应用暂不处理此状态。",
+                    "原国家码未知（00 00）。确认后只发送一次并严格复查；自动应用也会按相同规则处理。",
                 );
             }
             if selected
@@ -592,6 +651,23 @@ impl App {
                 pill(ui, text, color);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(state) = self.auto_state {
+                        if state.installed
+                            && state.needs_update
+                            && ui
+                                .add_enabled(
+                                    !state.running
+                                        && !state.paused
+                                        && self.receiver.is_none()
+                                        && !self.confirming(),
+                                    egui::Button::new(
+                                        RichText::new("更新服务").color(Color32::WHITE),
+                                    )
+                                    .fill(BLUE),
+                                )
+                                .clicked()
+                        {
+                            self.confirm_service_update = true;
+                        }
                         if ui
                             .add_enabled(
                                 self.receiver.is_none() && !self.confirming(),
@@ -621,6 +697,12 @@ impl App {
             }
             if self.auto_state.is_some_and(|s| s.paused) {
                 ui.colored_label(RED, "请检查日志并手动复查，再卸载、重新开启。");
+            }
+            if self.auto_state.is_some_and(|s| s.needs_update) {
+                ui.colored_label(
+                    AMBER,
+                    "已安装的服务副本与当前程序不同；更新主程序不会自动更新服务。",
+                );
             }
         });
     }
@@ -758,6 +840,64 @@ impl App {
                 });
             });
         }
+        if self.confirm_service_update {
+            egui::Modal::new(egui::Id::new("confirm-service-update"))
+                .frame(card().inner_margin(24.0))
+                .show(ctx, |ui| {
+                    ui.set_width(420.0);
+                    ui.heading("更新自动应用服务？");
+                    ui.label("停止并移除旧服务，再安装当前程序副本。保留执行日志；需管理员权限。");
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if primary_button(ui, "确认更新", true).clicked() {
+                            self.update_service();
+                        }
+                        if ui.button("取消").clicked() {
+                            self.confirm_service_update = false;
+                        }
+                    });
+                });
+        }
+        if self.confirm_update
+            && let Some(release) = self.available_update.clone()
+        {
+            egui::Modal::new(egui::Id::new("confirm-program-update"))
+                .frame(card().inner_margin(24.0))
+                .show(ctx, |ui| {
+                    ui.set_width(430.0);
+                    ui.heading(format!("发现新版本 v{}", release.version));
+                    ui.label("请在 Release 页面下载新版程序。关闭本程序后，在安装目录替换旧 EXE。");
+                    ui.label("已安装的自动应用服务不会同步更新；替换后可在主窗口点击“更新服务”。");
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if primary_button(ui, "打开 Release 页面", true).clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(&release.page));
+                        }
+                        if ui.button("打开安装目录").clicked() {
+                            match std::env::current_exe()
+                                .ok()
+                                .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+                            {
+                                Some(dir) => {
+                                    if let Err(e) =
+                                        std::process::Command::new("explorer.exe").arg(dir).spawn()
+                                    {
+                                        self.failure("无法打开安装目录。", e.to_string(), true);
+                                    }
+                                }
+                                None => self.failure(
+                                    "无法打开安装目录。",
+                                    "无法取得当前程序所在目录。".into(),
+                                    true,
+                                ),
+                            }
+                        }
+                        if ui.button("稍后").clicked() {
+                            self.confirm_update = false;
+                        }
+                    });
+                });
+        }
         if let Some(error) = self.error_popup.clone() {
             egui::Modal::new(egui::Id::new("error-popup"))
                 .frame(card().inner_margin(24.0))
@@ -783,11 +923,35 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Steam Frame").size(24.0).strong().color(INK));
-                    ui.label(RichText::new("6 GHz 设置工具").size(15.0).color(MUTED));
+                    ui.label(
+                        RichText::new(format!("6 GHz 设置工具 · v{}", env!("CARGO_PKG_VERSION")))
+                            .size(15.0)
+                            .color(MUTED),
+                    );
                     if self.demo {
                         pill(ui, "演示", AMBER);
                     }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if github_button(ui, self.github_mark.as_ref()).clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(frame::REPO));
+                        }
+                        if primary_button(ui, "头显设置", true).clicked() && self.frame_ui.is_none()
+                        {
+                            self.frame_ui = Some(frame_ui::FrameUi::new(self.demo));
+                        }
+                    });
                 });
+                if let Some(release) = &self.available_update {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("发现新版本 v{}", release.version));
+                        if ui
+                            .add_enabled(self.frame_ui.is_none(), egui::Button::new("更新程序"))
+                            .clicked()
+                        {
+                            self.confirm_update = true;
+                        }
+                    });
+                }
                 ui.add_space(14.0);
                 self.device_card(ui);
                 ui.add_space(10.0);
@@ -813,15 +977,39 @@ impl App {
 }
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        self.poll_update();
         self.poll_service();
         self.poll();
-        if self.receiver.is_some() && ctx.input(|i| i.viewport().close_requested()) {
+        if (self.receiver.is_some() || self.frame_ui.as_ref().is_some_and(|ui| ui.busy()))
+            && ctx.input(|i| i.viewport().close_requested())
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.status = "操作尚未结束，请稍候再关闭窗口。".into();
         }
         self.draw(ctx);
+        if let Some(child) = &mut self.frame_ui {
+            let close = ctx.show_viewport_immediate(
+                egui::ViewportId::from_hash_of("frame-settings"),
+                egui::ViewportBuilder::default()
+                    .with_title("Steam Frame · 头显设置")
+                    .with_inner_size([680.0, 650.0])
+                    .with_min_inner_size([560.0, 520.0]),
+                |child_ctx, _| child.draw(child_ctx),
+            );
+            let lines = child.take_log();
+            for line in lines {
+                self.record(&format!("头显：{line}"));
+            }
+            if close {
+                self.frame_ui = None;
+            }
+        }
         ctx.request_repaint_after(
-            if self.receiver.is_some() || self.service_receiver.is_some() {
+            if self.receiver.is_some()
+                || self.service_receiver.is_some()
+                || self.update_receiver.is_some()
+                || self.frame_ui.is_some()
+            {
                 Duration::from_millis(100)
             } else {
                 Duration::from_secs(2)
@@ -904,6 +1092,33 @@ fn card() -> egui::Frame {
         .stroke(egui::Stroke::new(1.0, BORDER))
         .corner_radius(10)
         .inner_margin(16.0)
+}
+fn load_github_mark(ctx: &egui::Context) -> egui::TextureHandle {
+    // GitHub's mark, downscaled from github.githubassets.com/images/modules/logos_page/GitHub-Mark.png.
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(
+            include_str!("github_mark.png.b64")
+                .lines()
+                .collect::<String>(),
+        )
+        .expect("embedded GitHub mark is valid base64");
+    let rgba = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+        .expect("embedded GitHub mark is a valid PNG")
+        .to_rgba8();
+    let pixels = egui::ColorImage::from_rgba_unmultiplied(
+        [rgba.width() as usize, rgba.height() as usize],
+        rgba.as_raw(),
+    );
+    ctx.load_texture("github-mark", pixels, egui::TextureOptions::LINEAR)
+}
+fn github_button(ui: &mut egui::Ui, mark: Option<&egui::TextureHandle>) -> egui::Response {
+    let button = if let Some(mark) = mark {
+        egui::Button::new(egui::Image::new(mark).fit_to_exact_size(egui::vec2(20.0, 20.0)))
+    } else {
+        egui::Button::new("GitHub")
+    };
+    ui.add(button.min_size(egui::vec2(36.0, 36.0)))
+        .on_hover_text("打开 GitHub 仓库")
 }
 fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
     ui.scope(|ui| {
@@ -1026,6 +1241,11 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod ui_tests {
     use super::*;
+    #[test]
+    fn embedded_github_mark_loads() {
+        let mark = load_github_mark(&egui::Context::default());
+        assert_eq!(mark.size(), [48, 48]);
+    }
     #[test]
     fn auto_apply_requires_explicit_action_and_demo_never_installs() {
         let mut app = App::empty(true);
