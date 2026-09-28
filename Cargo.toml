@@ -1,9 +1,10 @@
 [package]
 name = "steam-frame-6ghz-tool"
-version = "0.1.0-preview.4"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Steam Frame 6 GHz 设置工具"
+license = "MIT"
 
 [dependencies]
 base64 = "0.23"

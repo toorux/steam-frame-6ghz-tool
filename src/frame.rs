@@ -1,4 +1,5 @@
 //! Frame SSH operations. Only the fixed commands below may be sent to the headset.
+use crate::i18n::{self, t};
 use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
 use serde::{Deserialize, Serialize};
 use ssh2::{HashType, KeyboardInteractivePrompt, Prompt, Session};
@@ -31,9 +32,12 @@ use windows_sys::Win32::{
 use zeroize::Zeroize;
 
 pub const SSH_HELP: &str = "https://github.com/toorux/steam-frame-6ghz-tool#frame-如何开启ssh";
+pub const SSH_HELP_EN: &str =
+    "https://github.com/toorux/steam-frame-6ghz-tool/blob/main/README.en.md#enabling-ssh-on-frame";
 pub const REPO: &str = "https://github.com/toorux/steam-frame-6ghz-tool";
 const CONFIG: &str = "/etc/conf.d/wireless-regdom";
 pub const COMMANDS: &str = "sudo -S -p '' true  # 验证 sudo 权限\nsudo -S -p '' cat /etc/conf.d/wireless-regdom  # 预检，不写入\nsudo -S -p '' /usr/sbin/iw reg set US\n# 如果尚未启用 US，则执行：\nsudo -S -p '' sed -i 's/^#WIRELESS_REGDOM=\"US\"$/WIRELESS_REGDOM=\"US\"/' /etc/conf.d/wireless-regdom\nsudo -S -p '' cat /etc/conf.d/wireless-regdom  # 复查\ngrep -n '^WIRELESS_REGDOM=' /etc/conf.d/wireless-regdom\n/usr/sbin/iw reg get";
+pub const COMMANDS_EN: &str = "sudo -S -p '' true  # Check sudo access\nsudo -S -p '' cat /etc/conf.d/wireless-regdom  # Preflight; read only\nsudo -S -p '' /usr/sbin/iw reg set US\n# Only if US is not already enabled:\nsudo -S -p '' sed -i 's/^#WIRELESS_REGDOM=\"US\"$/WIRELESS_REGDOM=\"US\"/' /etc/conf.d/wireless-regdom\nsudo -S -p '' cat /etc/conf.d/wireless-regdom  # Verify\ngrep -n '^WIRELESS_REGDOM=' /etc/conf.d/wireless-regdom\n/usr/sbin/iw reg get";
 const SET_RUNTIME: &str = "sudo -S -p '' /usr/sbin/iw reg set US";
 const SET_CONFIG: &str = "sudo -S -p '' sed -i 's/^#WIRELESS_REGDOM=\"US\"$/WIRELESS_REGDOM=\"US\"/' /etc/conf.d/wireless-regdom";
 const GET_CONFIG: &str = "sudo -S -p '' cat /etc/conf.d/wireless-regdom";
@@ -83,7 +87,11 @@ pub fn networks() -> Result<Vec<Network>, String> {
         };
     }
     if result != 0 {
-        return Err(format!("读取本机网段失败：Windows 错误 {result}"));
+        return Err(if i18n::is_english() {
+            format!("Could not read local network: Windows error {result}")
+        } else {
+            format!("读取本机网段失败：Windows 错误 {result}")
+        });
     }
     let mut found = vec![];
     let mut adapter = bytes.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
@@ -270,25 +278,40 @@ pub fn start_scan(nets: Vec<Network>) -> Scan {
 #[derive(Serialize, Deserialize, Default)]
 struct KnownHosts(BTreeMap<String, String>);
 fn known_hosts_path() -> Result<PathBuf, String> {
-    let base = std::env::var_os("LOCALAPPDATA").ok_or("找不到 LOCALAPPDATA")?;
+    let base = std::env::var_os("LOCALAPPDATA")
+        .ok_or(t("找不到 LOCALAPPDATA", "LOCALAPPDATA was not found"))?;
     Ok(PathBuf::from(base)
         .join("SteamFrame6GHzTool")
         .join("known-hosts.json"))
 }
 fn known_hosts() -> Result<KnownHosts, String> {
     match fs::read(known_hosts_path()?) {
-        Ok(bytes) => {
-            serde_json::from_slice(&bytes).map_err(|e| format!("已保存的主机密钥记录无效：{e}"))
-        }
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+            if i18n::is_english() {
+                format!("Saved host key record is invalid: {e}")
+            } else {
+                format!("已保存的主机密钥记录无效：{e}")
+            }
+        }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(KnownHosts::default()),
-        Err(e) => Err(format!("无法读取已保存的主机密钥：{e}")),
+        Err(e) => Err(if i18n::is_english() {
+            format!("Could not read saved host keys: {e}")
+        } else {
+            format!("无法读取已保存的主机密钥：{e}")
+        }),
     }
 }
 fn save_host(ip: Ipv4Addr, fingerprint: &str) -> Result<(), String> {
     let path = known_hosts_path()?;
     let mut hosts = known_hosts()?;
     match hosts.0.get(&ip.to_string()) {
-        Some(old) if old != fingerprint => return Err("SSH 主机密钥已变化；拒绝发送密码".into()),
+        Some(old) if old != fingerprint => {
+            return Err(t(
+                "SSH 主机密钥已变化；拒绝发送密码",
+                "SSH host key changed; password was not sent",
+            )
+            .into());
+        }
         Some(_) => return Ok(()),
         None => {}
     }
@@ -298,12 +321,24 @@ fn save_host(ip: Ipv4Addr, fingerprint: &str) -> Result<(), String> {
         path,
         serde_json::to_vec_pretty(&hosts).map_err(|e| e.to_string())?,
     )
-    .map_err(|e| format!("无法保存 SSH 主机密钥：{e}"))
+    .map_err(|e| {
+        if i18n::is_english() {
+            format!("Could not save SSH host key: {e}")
+        } else {
+            format!("无法保存 SSH 主机密钥：{e}")
+        }
+    })
 }
 fn connect(ip: Ipv4Addr) -> Result<(Session, String), String> {
     let stream =
         TcpStream::connect_timeout(&SocketAddr::new(IpAddr::V4(ip), 22), Duration::from_secs(3))
-            .map_err(|e| format!("SSH 连接失败：{e}"))?;
+            .map_err(|e| {
+                if i18n::is_english() {
+                    format!("SSH connection failed: {e}")
+                } else {
+                    format!("SSH 连接失败：{e}")
+                }
+            })?;
     stream
         .set_read_timeout(Some(Duration::from_secs(8)))
         .map_err(|e| e.to_string())?;
@@ -313,12 +348,16 @@ fn connect(ip: Ipv4Addr) -> Result<(Session, String), String> {
     let mut session = Session::new().map_err(|e| e.to_string())?;
     session.set_tcp_stream(stream);
     session.set_timeout(8000);
-    session
-        .handshake()
-        .map_err(|e| format!("SSH 握手失败：{e}"))?;
+    session.handshake().map_err(|e| {
+        if i18n::is_english() {
+            format!("SSH handshake failed: {e}")
+        } else {
+            format!("SSH 握手失败：{e}")
+        }
+    })?;
     let hash = session
         .host_key_hash(HashType::Sha256)
-        .ok_or("无法读取 SSH 主机密钥")?;
+        .ok_or(t("无法读取 SSH 主机密钥", "Could not read SSH host key"))?;
     let fingerprint = format!("SHA256:{}", STANDARD_NO_PAD.encode(hash));
     Ok((session, fingerprint))
 }
@@ -330,7 +369,11 @@ pub fn probe(ip: Ipv4Addr) -> Result<Probe, String> {
     let (_, fingerprint) = connect(ip)?;
     let hosts = known_hosts()?;
     match hosts.0.get(&ip.to_string()) {
-        Some(old) if old != &fingerprint => Err("SSH 主机密钥已变化；拒绝发送密码".into()),
+        Some(old) if old != &fingerprint => Err(t(
+            "SSH 主机密钥已变化；拒绝发送密码",
+            "SSH host key changed; password was not sent",
+        )
+        .into()),
         old => Ok(Probe {
             new_host: old.is_none(),
             fingerprint,
@@ -360,9 +403,13 @@ fn command(
     sudo_password: Option<&str>,
 ) -> Result<(i32, String), String> {
     let mut channel = session.channel_session().map_err(|e| e.to_string())?;
-    channel
-        .exec(code)
-        .map_err(|e| format!("远端命令启动失败：{e}"))?;
+    channel.exec(code).map_err(|e| {
+        if i18n::is_english() {
+            format!("Could not start remote command: {e}")
+        } else {
+            format!("远端命令启动失败：{e}")
+        }
+    })?;
     if let Some(password) = sudo_password {
         let mut secret = password.as_bytes().to_vec();
         secret.push(b'\n');
@@ -399,14 +446,22 @@ fn valid_config(content: &str) -> Result<bool, String> {
             .first()
             .is_some_and(|line| *line != "WIRELESS_REGDOM=\"US\"")
     {
-        return Err("配置中存在其他已启用的国家码；未修改".into());
+        return Err(t(
+            "配置中存在其他已启用的国家码；未修改",
+            "Another country code is enabled in the configuration; no changes made",
+        )
+        .into());
     }
     if active.is_empty()
         && !content
             .lines()
             .any(|line| line == "#WIRELESS_REGDOM=\"US\"")
     {
-        return Err("配置中没有 README 预期的 US 行；未修改".into());
+        return Err(t(
+            "配置中没有 README 预期的 US 行；未修改",
+            "The expected US line is missing from the configuration; no changes made",
+        )
+        .into());
     }
     Ok(!active.is_empty())
 }
@@ -430,12 +485,20 @@ fn reg_is_us(output: &str) -> bool {
     global && phy0
 }
 pub fn execute(ip: Ipv4Addr, expected: &str, credentials: Credentials) -> Outcome {
-    let mut lines = vec![format!("连接 {ip}，核对主机密钥")];
+    let mut lines = vec![if i18n::is_english() {
+        format!("Connecting to {ip}; checking host key")
+    } else {
+        format!("连接 {ip}，核对主机密钥")
+    }];
     let mut sudo_auth_failed = false;
     let result = (|| -> Result<(), String> {
         let (session, fingerprint) = connect(ip)?;
         if fingerprint != expected {
-            return Err("SSH 主机密钥在确认后发生变化；拒绝发送密码".into());
+            return Err(t(
+                "SSH 主机密钥在确认后发生变化；拒绝发送密码",
+                "SSH host key changed after confirmation; password was not sent",
+            )
+            .into());
         }
         let hosts = known_hosts()?;
         if hosts
@@ -443,7 +506,11 @@ pub fn execute(ip: Ipv4Addr, expected: &str, credentials: Credentials) -> Outcom
             .get(&ip.to_string())
             .is_some_and(|old| old != expected)
         {
-            return Err("SSH 主机密钥已变化；拒绝发送密码".into());
+            return Err(t(
+                "SSH 主机密钥已变化；拒绝发送密码",
+                "SSH host key changed; password was not sent",
+            )
+            .into());
         }
         save_host(ip, expected)?;
         if session
@@ -465,12 +532,18 @@ pub fn execute(ip: Ipv4Addr, expected: &str, credentials: Credentials) -> Outcom
                     &credentials.username,
                     &mut PasswordPrompt(&credentials.password),
                 )
-                .map_err(|_| "SSH 用户名或密码验证失败".to_string())?;
+                .map_err(|_| {
+                    t(
+                        "SSH 用户名或密码验证失败",
+                        "SSH username or password was rejected",
+                    )
+                    .to_string()
+                })?;
         }
         if !session.authenticated() {
-            return Err("SSH 验证未完成".into());
+            return Err(t("SSH 验证未完成", "SSH authentication did not complete").into());
         }
-        lines.push("SSH 登录成功".into());
+        lines.push(t("SSH 登录成功", "SSH login succeeded").into());
         let sudo = if credentials.sudo_password.is_empty() {
             &credentials.password
         } else {
@@ -479,31 +552,63 @@ pub fn execute(ip: Ipv4Addr, expected: &str, credentials: Credentials) -> Outcom
         let (code, _) = command(&session, "sudo -S -p '' true", Some(sudo))?;
         if code != 0 {
             sudo_auth_failed = true;
-            return Err("sudo 密码或权限验证失败；尚未修改头显".into());
+            return Err(t(
+                "sudo 密码或权限验证失败；尚未修改头显",
+                "sudo password or permission check failed; headset unchanged",
+            )
+            .into());
         }
         let (code, config) = command(&session, GET_CONFIG, Some(sudo))?;
         if code != 0 {
-            return Err(format!("无法读取 {CONFIG}；尚未修改头显"));
+            return Err(if i18n::is_english() {
+                format!("Could not read {CONFIG}; headset unchanged")
+            } else {
+                format!("无法读取 {CONFIG}；尚未修改头显")
+            });
         }
         let enabled = valid_config(&config)?;
-        lines.push("永久配置预检通过".into());
+        lines.push(
+            t(
+                "永久配置预检通过",
+                "Persistent configuration preflight passed",
+            )
+            .into(),
+        );
         let (code, _) = command(&session, SET_RUNTIME, Some(sudo))?;
         if code != 0 {
-            return Err("临时设置 US 失败；永久配置未修改".into());
+            return Err(t(
+                "临时设置 US 失败；永久配置未修改",
+                "Runtime US setting failed; persistent configuration unchanged",
+            )
+            .into());
         }
-        lines.push("已执行临时设置 US".into());
+        lines.push(t("已执行临时设置 US", "Runtime US setting applied").into());
         if !enabled {
             let (code, _) = command(&session, SET_CONFIG, Some(sudo))?;
             if code != 0 {
-                return Err("临时设置已完成，但永久配置修改失败".into());
+                return Err(t(
+                    "临时设置已完成，但永久配置修改失败",
+                    "Runtime setting applied, but persistent configuration update failed",
+                )
+                .into());
             }
-            lines.push("已启用永久配置 US".into());
+            lines.push(t("已启用永久配置 US", "Persistent US setting enabled").into());
         } else {
-            lines.push("永久配置已是 US，未重复修改".into());
+            lines.push(
+                t(
+                    "永久配置已是 US，未重复修改",
+                    "Persistent configuration is already US; file unchanged",
+                )
+                .into(),
+            );
         }
         let (code, after) = command(&session, GET_CONFIG, Some(sudo))?;
         if code != 0 || valid_config(&after) != Ok(true) {
-            return Err("临时设置已完成，但永久配置复查失败".into());
+            return Err(t(
+                "临时设置已完成，但永久配置复查失败",
+                "Runtime setting applied, but persistent configuration verification failed",
+            )
+            .into());
         }
         let (code, active) = command(&session, GREP_CONFIG, None)?;
         if code != 0
@@ -513,13 +618,17 @@ pub fn execute(ip: Ipv4Addr, expected: &str, credentials: Credentials) -> Outcom
                 .next()
                 .is_some_and(|line| line.ends_with(":WIRELESS_REGDOM=\"US\""))
         {
-            return Err("永久配置不是唯一一条已启用的 US 设置".into());
+            return Err(t(
+                "永久配置不是唯一一条已启用的 US 设置",
+                "Persistent US setting is not the only enabled region entry",
+            )
+            .into());
         }
         let (code, state) = command(&session, GET_REG, None)?;
         if code != 0 || !reg_is_us(&state) {
-            return Err("永久配置已启用，但运行时未确认全局及 phy#0 都是 US".into());
+            return Err(t("永久配置已启用，但运行时未确认全局及 phy#0 都是 US", "Persistent US enabled, but runtime global and phy#0 regions were not both confirmed as US").into());
         }
-        lines.push("复查通过：全局和 phy#0 为 US，永久配置已启用；请稍后自行重启头显再复查".into());
+        lines.push(t("复查通过：全局和 phy#0 为 US，永久配置已启用；请稍后自行重启头显再复查", "Verification passed: global and phy#0 are US, persistent setting enabled. Restart the headset yourself and verify again.").into());
         Ok(())
     })();
     let success = result.is_ok();
@@ -555,6 +664,18 @@ mod tests {
             "global\ncountry US: DFS-FCC\nphy#0 (self-managed)\ncountry CN: DFS-UNKNOWN"
         ));
         assert!(!COMMANDS.contains("password"));
+    }
+    #[test]
+    fn translated_preview_keeps_the_same_commands() {
+        let commands = |preview: &str| {
+            preview
+                .lines()
+                .map(|line| line.split("  #").next().unwrap().trim())
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(commands(COMMANDS), commands(COMMANDS_EN));
     }
     #[test]
     #[ignore = "Read-only check of local network and optional FRAME_TEST_IP SSH handshake"]

@@ -1,4 +1,5 @@
 use crate::frame::{self, Candidate, Credentials, Network, Outcome, Probe, Scan};
+use crate::i18n::{self, t};
 use crate::{BLUE, INK, MUTED, RED, card, primary_button};
 use eframe::egui::{self, Color32, RichText};
 use std::{
@@ -65,7 +66,11 @@ impl FrameUi {
             demo,
         };
         if demo {
-            this.status = "演示模式：不会连接网络或修改头显。".into();
+            this.status = t(
+                "演示模式：不会连接网络或修改头显。",
+                "Demo mode: no network connection or headset changes.",
+            )
+            .into();
         } else {
             this.scan();
         }
@@ -81,27 +86,44 @@ impl FrameUi {
         self.status_error = false;
         match frame::networks() {
             Ok(nets) if nets.is_empty() => {
-                self.status = "未找到活动的局域网 IPv4 网段，请手动输入 Frame IP。".into()
+                self.status = t(
+                    "未找到活动的局域网 IPv4 网段，请手动输入 Frame IP。",
+                    "No active local IPv4 subnet found. Enter the Frame IP manually.",
+                )
+                .into()
             }
             Ok(nets) => {
                 let count: u64 = nets.iter().map(|n| n.host_count()).sum();
                 self.networks = nets;
                 if count > 4096 {
                     self.large_scan = true;
-                    self.status =
-                        format!("当前网段包含 {count} 个地址，扫描可能较慢。请选择是否继续。");
+                    self.status = if i18n::is_english() {
+                        format!("This subnet has {count} addresses. Scanning may take a while.")
+                    } else {
+                        format!("当前网段包含 {count} 个地址，扫描可能较慢。请选择是否继续。")
+                    };
                 } else {
                     self.start_scan();
                 }
             }
-            Err(e) => self.status = format!("扫描不可用：{e}。可手动输入 IP。"),
+            Err(e) => {
+                self.status = if i18n::is_english() {
+                    format!("Scan unavailable: {e}. Enter the IP manually.")
+                } else {
+                    format!("扫描不可用：{e}。可手动输入 IP。")
+                }
+            }
         }
     }
     fn start_scan(&mut self) {
         self.large_scan = false;
         self.status_error = false;
         self.scan = Some(frame::start_scan(self.networks.clone()));
-        self.status = "正在扫描局域网中名为 frame 的设备…".into();
+        self.status = t(
+            "正在扫描局域网中名为 frame 的设备…",
+            "Scanning the LAN for devices named frame…",
+        )
+        .into();
     }
     fn poll(&mut self) {
         if let Some(scan) = &self.scan {
@@ -114,9 +136,22 @@ impl FrameUi {
             }
             if scan.done.load(Ordering::Acquire) {
                 let summary = if scan.cancel.load(Ordering::Relaxed) {
-                    "扫描已取消，可手动输入 IP。".into()
+                    t(
+                        "扫描已取消，可手动输入 IP。",
+                        "Scan cancelled. Enter an IP manually.",
+                    )
+                    .into()
                 } else if self.candidates.is_empty() {
-                    "未找到主机名为 frame 的设备，请手动输入 IP。".into()
+                    t(
+                        "未找到主机名为 frame 的设备，请手动输入 IP。",
+                        "No device named frame found. Enter the IP manually.",
+                    )
+                    .into()
+                } else if i18n::is_english() {
+                    format!(
+                        "Scan complete: {} candidate(s) found.",
+                        self.candidates.len()
+                    )
                 } else {
                     format!("扫描完成：找到 {} 个候选设备。", self.candidates.len())
                 };
@@ -136,9 +171,19 @@ impl FrameUi {
                         self.trust_new = !probe.new_host;
                         self.preview = Some((ip, username, probe));
                         self.status_error = false;
-                        self.status = "请核对主机密钥和命令后确认。".into();
+                        self.status = t(
+                            "请核对主机密钥和命令后确认。",
+                            "Check the host key and commands before confirming.",
+                        )
+                        .into();
                     }
-                    Ok(_) => self.error("连接信息已变化，请重新确认。".into()),
+                    Ok(_) => self.error(
+                        t(
+                            "连接信息已变化，请重新确认。",
+                            "Connection details changed. Please confirm again.",
+                        )
+                        .into(),
+                    ),
                     Err(e) => self.error(e),
                 }
             }
@@ -146,11 +191,19 @@ impl FrameUi {
                 self.receiver = None;
                 self.sudo_password.zeroize();
                 self.status = if result.success {
-                    "头显设置完成；请稍后自行重启并复查。".into()
+                    t(
+                        "头显设置完成；请稍后自行重启并复查。",
+                        "Headset setup complete. Restart it yourself and verify again.",
+                    )
+                    .into()
                 } else if result.sudo_auth_failed {
-                    "sudo 验证失败；如密码不同，请填写独立 sudo 密码，并重新输入 SSH 密码。".into()
+                    t("sudo 验证失败；如密码不同，请填写独立 sudo 密码，并重新输入 SSH 密码。", "sudo authentication failed. If its password differs, enter it separately and re-enter the SSH password.").into()
                 } else {
-                    "操作未完成，请查看下方步骤。".into()
+                    t(
+                        "操作未完成，请查看下方步骤。",
+                        "Operation incomplete. Review the steps below.",
+                    )
+                    .into()
                 };
                 self.status_error = !result.success;
                 for line in result.lines {
@@ -160,27 +213,47 @@ impl FrameUi {
             }
             Some(Err(mpsc::TryRecvError::Disconnected)) => {
                 self.receiver = None;
-                self.error("连接线程意外结束；结果未知，请在头显上检查。".into());
+                self.error(
+                    t(
+                        "连接线程意外结束；结果未知，请在头显上检查。",
+                        "Connection thread ended unexpectedly. Result unknown; check the headset.",
+                    )
+                    .into(),
+                );
             }
             _ => {}
         }
     }
     fn error(&mut self, error: String) {
-        self.status = error.clone();
+        self.status = if i18n::is_english() {
+            "Headset operation failed. See the diagnostic log below.".into()
+        } else {
+            error.clone()
+        };
         self.status_error = true;
         self.lines.push(format!("[ERROR] {error}"));
         self.exported.push(format!("[ERROR] {error}"));
     }
     fn probe(&mut self) {
         let Ok(ip) = self.ip.trim().parse::<Ipv4Addr>() else {
-            self.error("请输入有效的 IPv4 地址。".into());
+            self.error(t("请输入有效的 IPv4 地址。", "Enter a valid IPv4 address.").into());
             return;
         };
         if self.username.trim().is_empty() || self.password.is_empty() {
-            self.error("请填写用户名和 SSH 密码。".into());
+            self.error(
+                t(
+                    "请填写用户名和 SSH 密码。",
+                    "Enter a username and SSH password.",
+                )
+                .into(),
+            );
             return;
         }
-        self.status = "正在读取 SSH 主机密钥；尚未发送密码…".into();
+        self.status = t(
+            "正在读取 SSH 主机密钥；尚未发送密码…",
+            "Reading SSH host key; password not sent yet…",
+        )
+        .into();
         self.status_error = false;
         let username = self.username.trim().to_owned();
         let (tx, rx) = mpsc::channel();
@@ -194,7 +267,13 @@ impl FrameUi {
             return;
         };
         if self.ip.trim() != ip.to_string() || self.username.trim() != username {
-            self.error("连接信息已变化，请重新确认。".into());
+            self.error(
+                t(
+                    "连接信息已变化，请重新确认。",
+                    "Connection details changed. Please confirm again.",
+                )
+                .into(),
+            );
             return;
         }
         let credentials = Credentials {
@@ -202,7 +281,11 @@ impl FrameUi {
             password: std::mem::take(&mut self.password),
             sudo_password: std::mem::take(&mut self.sudo_password),
         };
-        self.status = "正在通过 SSH 设置并复查…".into();
+        self.status = t(
+            "正在通过 SSH 设置并复查…",
+            "Applying settings over SSH and verifying…",
+        )
+        .into();
         self.status_error = false;
         let (tx, rx) = mpsc::channel();
         self.receiver = Some(rx);
@@ -224,10 +307,10 @@ impl FrameUi {
         card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(RichText::new("发现头显").size(16.0).strong().color(INK));
+                ui.label(RichText::new(t("发现头显", "Find headset")).size(16.0).strong().color(INK));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add_enabled(!self.demo && !self.busy(), egui::Button::new("重新扫描"))
+                        .add_enabled(!self.demo && !self.busy(), egui::Button::new(t("重新扫描", "Scan again")))
                         .clicked()
                     {
                         self.scan();
@@ -237,23 +320,19 @@ impl FrameUi {
             if let Some(scan) = &self.scan {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(format!(
-                        "正在扫描  {}/{}",
-                        scan.progress.load(Ordering::Relaxed),
-                        scan.total
-                    ));
-                    if ui.small_button("取消").clicked() {
+                    ui.label(if i18n::is_english() { format!("Scanning  {}/{}", scan.progress.load(Ordering::Relaxed), scan.total) } else { format!("正在扫描  {}/{}", scan.progress.load(Ordering::Relaxed), scan.total) });
+                    if ui.small_button(t("取消", "Cancel")).clicked() {
                         scan.cancel.store(true, Ordering::Relaxed);
                     }
                 });
             }
             if self.large_scan {
                 ui.horizontal(|ui| {
-                    ui.colored_label(MUTED, "当前网段较大，扫描可能需要一些时间。");
-                    if ui.button("继续扫描").clicked() {
+                    ui.colored_label(MUTED, t("当前网段较大，扫描可能需要一些时间。", "Large subnet; scanning may take a while."));
+                    if ui.button(t("继续扫描", "Continue scan")).clicked() {
                         self.start_scan();
                     }
-                    if ui.button("手动输入").clicked() {
+                    if ui.button(t("手动输入", "Enter IP manually")).clicked() {
                         self.large_scan = false;
                     }
                 });
@@ -273,9 +352,9 @@ impl FrameUi {
                     "frame  ·  {}  ·  SSH {}",
                     candidate.ip,
                     if candidate.ssh_open {
-                        "可连接"
+                        t("可连接", "open")
                     } else {
-                        "不可连接"
+                        t("不可连接", "closed")
                     }
                 );
                 if ui
@@ -283,7 +362,7 @@ impl FrameUi {
                         [ui.available_width(), 36.0],
                         egui::Button::selectable(self.ip == candidate.ip.to_string(), label),
                     )
-                    .on_hover_text("仅按主机名筛选；执行前请核对 SSH 主机密钥指纹。")
+                    .on_hover_text(t("仅按主机名筛选；执行前请核对 SSH 主机密钥指纹。", "Filtered by hostname only. Verify the SSH host key fingerprint before running commands."))
                     .clicked()
                 {
                     self.ip = candidate.ip.to_string();
@@ -291,9 +370,9 @@ impl FrameUi {
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("头显 IP 地址").strong().color(INK));
+                ui.label(RichText::new(t("头显 IP 地址", "Headset IP address")).strong().color(INK));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.link("如何查看 Frame IP").clicked() {
+                    if ui.link(t("如何查看 Frame IP", "How to find the Frame IP")).clicked() {
                         self.ip_help = true;
                     }
                 });
@@ -304,17 +383,17 @@ impl FrameUi {
                     .desired_width(f32::INFINITY)
                     .min_size(egui::vec2(0.0, FIELD_HEIGHT))
                     .vertical_align(egui::Align::Center)
-                    .hint_text("例如 192.168.1.20"),
+                    .hint_text(t("例如 192.168.1.20", "e.g. 192.168.1.20")),
             );
         });
     }
     fn credentials_card(&mut self, ui: &mut egui::Ui) {
         card().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new("连接信息").size(16.0).strong().color(INK));
+            ui.label(RichText::new(t("连接信息", "Connection details")).size(16.0).strong().color(INK));
             ui.add_space(4.0);
             ui.columns(2, |columns| {
-                columns[0].label(RichText::new("用户名").strong().color(INK));
+                columns[0].label(RichText::new(t("用户名", "Username")).strong().color(INK));
                 columns[0].add_enabled(
                     !self.busy(),
                     egui::TextEdit::singleline(&mut self.username)
@@ -322,7 +401,7 @@ impl FrameUi {
                         .min_size(egui::vec2(0.0, FIELD_HEIGHT))
                         .vertical_align(egui::Align::Center),
                 );
-                columns[1].label(RichText::new("SSH 密码").strong().color(INK));
+                columns[1].label(RichText::new(t("SSH 密码", "SSH password")).strong().color(INK));
                 columns[1].add_enabled(
                     !self.busy(),
                     egui::TextEdit::singleline(&mut self.password)
@@ -333,11 +412,11 @@ impl FrameUi {
                 );
             });
             ui.label(
-                RichText::new("程序不会收集、保存或上传你的密码；仅在本机内存中用于本次 SSH／sudo 验证，不写入日志。")
+                RichText::new(t("程序不会收集、保存或上传你的密码；仅在本机内存中用于本次 SSH／sudo 验证，不写入日志。", "Your password is not collected, saved, uploaded, or logged. It is used in memory for this SSH/sudo session only."))
                     .small()
                     .color(MUTED),
             );
-            egui::CollapsingHeader::new("sudo 密码与 SSH 密码不同？")
+            egui::CollapsingHeader::new(t("sudo 密码与 SSH 密码不同？", "Different sudo password?"))
                 .show(ui, |ui| {
                     ui.add_enabled(
                         !self.busy(),
@@ -346,14 +425,14 @@ impl FrameUi {
                             .desired_width(f32::INFINITY)
                             .min_size(egui::vec2(0.0, FIELD_HEIGHT))
                             .vertical_align(egui::Align::Center)
-                            .hint_text("可选：输入单独的 sudo 密码"),
+                            .hint_text(t("可选：输入单独的 sudo 密码", "Optional: enter a separate sudo password")),
                     );
                 });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.hyperlink_to("如何开启 SSH", frame::SSH_HELP);
+                ui.hyperlink_to(t("如何开启 SSH", "How to enable SSH"), if i18n::is_english() { frame::SSH_HELP_EN } else { frame::SSH_HELP });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if primary_button(ui, "连接并预览命令", !self.busy() && !self.demo).clicked()
+                    if primary_button(ui, t("连接并预览命令", "Connect and preview commands"), !self.busy() && !self.demo).clicked()
                     {
                         self.probe();
                     }
@@ -407,11 +486,19 @@ impl FrameUi {
     fn page_content(&mut self, ui: &mut egui::Ui) {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            ui.label(RichText::new("头显设置").size(24.0).strong().color(INK));
             ui.label(
-                RichText::new("连接 Frame，设置无线监管区域")
-                    .size(14.0)
-                    .color(MUTED),
+                RichText::new(t("头显设置", "Headset settings"))
+                    .size(24.0)
+                    .strong()
+                    .color(INK),
+            );
+            ui.label(
+                RichText::new(t(
+                    "连接 Frame，设置无线监管区域",
+                    "Connect to Frame and set its wireless region",
+                ))
+                .size(14.0)
+                .color(MUTED),
             );
         });
         ui.add_space(6.0);
@@ -428,7 +515,11 @@ impl FrameUi {
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         if close_requested && self.busy() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.status = "远程操作尚未结束，请稍候再关闭窗口。".into();
+            self.status = t(
+                "远程操作尚未结束，请稍候再关闭窗口。",
+                "Remote operation still running. Wait before closing.",
+            )
+            .into();
         }
         let close = close_requested && !self.busy();
         egui::CentralPanel::default()
@@ -448,18 +539,18 @@ impl FrameUi {
                 .show(ctx, |ui| {
                     ui.set_width(360.0);
                     ui.label(
-                        RichText::new("查看 Frame IP")
+                        RichText::new(t("查看 Frame IP", "Find the Frame IP"))
                             .size(20.0)
                             .strong()
                             .color(INK),
                     );
                     ui.add_space(8.0);
                     ui.label(
-                        "在 Frame 的 Wi-Fi 设置中，点开当前已连接的 Wi-Fi，即可查看 IP 地址。",
+                        t("在 Frame 的 Wi-Fi 设置中，点开当前已连接的 Wi-Fi，即可查看 IP 地址。", "On Frame, open Wi-Fi settings and select the connected network to see its IP address."),
                     );
                     ui.add_space(16.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if primary_button(ui, "知道了", true).clicked() {
+                        if primary_button(ui, t("知道了", "OK"), true).clicked() {
                             self.ip_help = false;
                         }
                     });
@@ -472,9 +563,9 @@ impl FrameUi {
                 .frame(card().inner_margin(20.0))
                 .show(ctx, |ui| {
                 ui.set_width(540.0);
-                ui.label(RichText::new("确认头显设置").size(21.0).strong().color(INK));
+                ui.label(RichText::new(t("确认头显设置", "Confirm headset setup")).size(21.0).strong().color(INK));
                 ui.label(
-                    RichText::new("请先确认连接目标和主机密钥，再执行远程命令。")
+                    RichText::new(t("请先确认连接目标和主机密钥，再执行远程命令。", "Verify the target and host key before running remote commands."))
                         .color(MUTED),
                 );
                 ui.add_space(12.0);
@@ -484,14 +575,14 @@ impl FrameUi {
                     .inner_margin(12.0)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.label(RichText::new("连接目标").small().color(MUTED));
+                        ui.label(RichText::new(t("连接目标", "Target")).small().color(MUTED));
                         ui.label(
                             RichText::new(format!("{}@{}", self.username.trim(), self.ip.trim()))
                                 .strong()
                                 .color(INK),
                         );
                         ui.add_space(6.0);
-                        ui.label(RichText::new("SSH 主机密钥指纹").small().color(MUTED));
+                        ui.label(RichText::new(t("SSH 主机密钥指纹", "SSH host key fingerprint")).small().color(MUTED));
                         ui.add(
                             egui::Label::new(
                                 RichText::new(&fingerprint)
@@ -533,7 +624,7 @@ impl FrameUi {
                                     [ui.available_width(), 40.0],
                                     egui::Checkbox::new(
                                         &mut self.trust_new,
-                                        RichText::new("首次连接：我已核对并信任上方指纹")
+                                        RichText::new(t("首次连接：我已核对并信任上方指纹", "First connection: I verified and trust this fingerprint"))
                                             .strong()
                                             .color(INK),
                                     ),
@@ -542,18 +633,18 @@ impl FrameUi {
                         });
                 } else {
                     ui.add_space(6.0);
-                    ui.label(RichText::new("主机密钥与之前信任的记录一致。").small().color(MUTED));
+                    ui.label(RichText::new(t("主机密钥与之前信任的记录一致。", "Host key matches the trusted record.")).small().color(MUTED));
                 }
                 ui.add_space(12.0);
-                ui.label(RichText::new("本次操作").strong().color(INK));
-                ui.label("验证 sudo 权限，设置运行时 US，并检查永久配置与结果。");
+                ui.label(RichText::new(t("本次操作", "This operation")).strong().color(INK));
+                ui.label(t("验证 sudo 权限，设置运行时 US，并检查永久配置与结果。", "Verify sudo access, set runtime US, and check the persistent setting and result."));
                 ui.label(
-                    RichText::new("若永久配置已是 US，不会重复修改文件；仍会重新应用一次运行时 US。不会自动重启。")
+                    RichText::new(t("若永久配置已是 US，不会重复修改文件；仍会重新应用一次运行时 US。不会自动重启。", "If the persistent setting is already US, the file is unchanged; runtime US is still applied once. No automatic reboot."))
                         .small()
                         .color(MUTED),
                 );
                 ui.add_space(8.0);
-                ui.label(RichText::new("将执行的命令").strong().color(INK));
+                ui.label(RichText::new(t("将执行的命令", "Commands to run")).strong().color(INK));
                 egui::Frame::new()
                     .fill(Color32::from_rgb(248, 250, 252))
                     .stroke(egui::Stroke::new(1.0, crate::BORDER))
@@ -564,7 +655,7 @@ impl FrameUi {
                         egui::ScrollArea::vertical().max_height(145.0).show(ui, |ui| {
                             ui.add(
                                 egui::Label::new(
-                                    RichText::new(frame::COMMANDS)
+                                    RichText::new(t(frame::COMMANDS, frame::COMMANDS_EN))
                                         .monospace()
                                         .size(12.0)
                                         .color(INK),
@@ -575,16 +666,16 @@ impl FrameUi {
                         });
                     });
                 ui.label(
-                    RichText::new("密码仅用于本次验证，不会出现在命令或日志中。")
+                    RichText::new(t("密码仅用于本次验证，不会出现在命令或日志中。", "The password is used only for this session and does not appear in commands or logs."))
                         .small()
                         .color(MUTED),
                 );
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if primary_button(ui, "确认执行", self.trust_new).clicked() {
+                    if primary_button(ui, t("确认执行", "Run commands"), self.trust_new).clicked() {
                         self.execute();
                     }
-                    if ui.button("取消").clicked() {
+                    if ui.button(t("取消", "Cancel")).clicked() {
                         self.password.zeroize();
                         self.sudo_password.zeroize();
                         self.preview = None;

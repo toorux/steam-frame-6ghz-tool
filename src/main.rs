@@ -5,6 +5,7 @@ compile_error!("This application targets x86_64 Windows only.");
 mod backend;
 mod frame;
 mod frame_ui;
+mod i18n;
 mod logs;
 mod protocol;
 mod service;
@@ -13,6 +14,7 @@ mod updater;
 use backend::{Adapter, Report};
 use base64::Engine as _;
 use eframe::egui::{self, Color32, RichText};
+use i18n::t;
 use std::{
     fs,
     path::PathBuf,
@@ -84,7 +86,7 @@ impl App {
             selected: None,
             receiver: None,
             device_status: None,
-            status: "请选择适配器。".into(),
+            status: t("请选择适配器。", "Select an adapter.").into(),
             status_level: Level::Info,
             log: String::new(),
             service_log: String::new(),
@@ -119,7 +121,8 @@ impl App {
         let mut app = Self::empty(demo);
         app.github_mark = Some(load_github_mark(&cc.egui_ctx));
         app.record(&format!(
-            "Steam Frame 6 GHz 设置工具 {}",
+            "{} {}",
+            t("Steam Frame 6 GHz 设置工具", "Steam Frame 6 GHz Tool"),
             env!("CARGO_PKG_VERSION")
         ));
         if demo {
@@ -165,7 +168,10 @@ impl App {
         self.adapters.clear();
         self.device_status = None;
         self.confirm = None;
-        self.busy_status("正在查找 Steam Frame 适配器…");
+        self.busy_status(t(
+            "正在查找 Steam Frame 适配器…",
+            "Searching for Steam Frame adapters…",
+        ));
         self.next_service_refresh = Instant::now();
         let (tx, rx) = mpsc::channel();
         self.receiver = Some(rx);
@@ -197,9 +203,15 @@ impl App {
         self.confirm_auto = None;
         self.reset_service_snapshot();
         self.busy_status(if install {
-            "正在安装自动应用服务…"
+            t(
+                "正在安装自动应用服务…",
+                "Installing the auto-apply service…",
+            )
         } else {
-            "正在停止并卸载服务，请稍候…"
+            t(
+                "正在停止并卸载服务，请稍候…",
+                "Stopping and removing the service…",
+            )
         });
         self.record(&self.status.clone());
         let (tx, rx) = mpsc::channel();
@@ -208,7 +220,7 @@ impl App {
         thread::spawn(move || {
             if demo {
                 let _ = tx.send(Event::AutoApply(
-                    Ok("演示模式：未修改系统。".into()),
+                    Ok(t("演示模式：未修改系统。", "Demo mode: no system changes.").into()),
                     Ok(service::State {
                         installed: install,
                         enabled: install,
@@ -230,7 +242,10 @@ impl App {
             return;
         }
         self.confirm_service_update = false;
-        self.busy_status("正在更新自动应用服务…");
+        self.busy_status(t(
+            "正在更新自动应用服务…",
+            "Updating the auto-apply service…",
+        ));
         self.record("用户确认更新自动应用服务副本");
         let (tx, rx) = mpsc::channel();
         self.receiver = Some(rx);
@@ -279,17 +294,17 @@ impl App {
         self.record(&format!(
             "{}：{} [{}]",
             if set_us {
-                "用户确认设置 US"
+                t("用户确认设置 US", "User confirmed setting US")
             } else {
-                "查询状态"
+                t("查询状态", "Query status")
             },
             adapter.name,
             adapter.id
         ));
         self.busy_status(if set_us {
-            "正在设置 US 并复查…"
+            t("正在设置 US 并复查…", "Setting US and verifying…")
         } else {
-            "正在读取设备状态…"
+            t("正在读取设备状态…", "Reading adapter status…")
         });
         let (tx, rx) = mpsc::channel();
         self.receiver = Some(rx);
@@ -315,13 +330,16 @@ impl App {
         self.selected = selected;
         self.device_status = None;
         self.confirm = None;
-        self.busy_status("请选择适配器。");
+        self.busy_status(t("请选择适配器。", "Select an adapter."));
         if let Some(adapter) = selected.and_then(|i| self.adapters.get(i)).cloned() {
             if adapter.supported() {
                 self.start(adapter, false);
             } else {
                 self.failure(
-                    "驱动不受支持，无法读取。",
+                    t(
+                        "驱动不受支持，无法读取。",
+                        "Unsupported driver; unable to read status.",
+                    ),
                     adapter.compatibility.unwrap_err(),
                     false,
                 );
@@ -330,19 +348,30 @@ impl App {
     }
     fn save(&mut self) {
         let mut dialog = rfd::FileDialog::new()
-            .add_filter("日志", &["txt"])
+            .add_filter(t("日志", "Log"), &["txt"])
             .set_file_name("steam-frame-log.txt");
         if let Some(dir) = &self.log_dir {
             dialog = dialog.set_directory(dir);
         }
         if let Some(path) = dialog.save_file() {
             let text = format!(
-                "\u{feff}Steam Frame 6 GHz 日志（UTC）\n程序日志\n{}\n服务日志\n{}",
-                self.log, self.service_log
+                "\u{feff}{}\n{}\n{}\n{}\n{}",
+                t(
+                    "Steam Frame 6 GHz 日志（UTC）",
+                    "Steam Frame 6 GHz Log (UTC)"
+                ),
+                t("程序日志", "Program log"),
+                self.log,
+                t("服务日志", "Service log"),
+                self.service_log
             );
             match fs::write(&path, text) {
                 Ok(()) => self.record(&format!("已导出全部来源日志：{}", path.display())),
-                Err(e) => self.failure("日志导出失败。", e.to_string(), true),
+                Err(e) => self.failure(
+                    t("日志导出失败。", "Could not export the log."),
+                    e.to_string(),
+                    true,
+                ),
             }
         }
     }
@@ -356,9 +385,15 @@ impl App {
                         match result {
                             Ok(items) => {
                                 self.busy_status(if items.is_empty() {
-                                    "未发现适配器。请插入设备，然后刷新。"
+                                    t(
+                                        "未发现适配器。请插入设备，然后刷新。",
+                                        "No adapter found. Plug it in and refresh.",
+                                    )
                                 } else {
-                                    "请选择适配器，选中后自动读取状态。"
+                                    t(
+                                        "请选择适配器，选中后自动读取状态。",
+                                        "Select an adapter to read its status.",
+                                    )
                                 });
                                 for a in &items {
                                     self.record(&format!(
@@ -371,7 +406,14 @@ impl App {
                                     self.select(Some(0));
                                 }
                             }
-                            Err(e) => self.failure("无法读取适配器，请查看日志。", e, false),
+                            Err(e) => self.failure(
+                                t(
+                                    "无法读取适配器，请查看日志。",
+                                    "Could not read the adapter. See the log.",
+                                ),
+                                e,
+                                false,
+                            ),
                         }
                     }
                     Event::AutoApply(result, state) => {
@@ -381,16 +423,25 @@ impl App {
                             Ok(message) => {
                                 self.record(&message);
                                 self.busy_status(if self.auto_state.is_some_and(|s| s.installed) {
-                                    "自动应用已安装，执行结果见下方服务日志。"
+                                    t(
+                                        "自动应用已安装，执行结果见下方服务日志。",
+                                        "Auto-apply is installed. See the service log below.",
+                                    )
                                 } else {
-                                    "自动应用已关闭，日志已保留。"
+                                    t(
+                                        "自动应用已关闭，日志已保留。",
+                                        "Auto-apply is off. Logs were kept.",
+                                    )
                                 });
                             }
                             Err(e) => {
                                 let summary = if e.starts_with("权限不足") {
-                                    "权限不足，请以管理员身份重新运行。"
+                                    t(
+                                        "权限不足，请以管理员身份重新运行。",
+                                        "Access denied. Run as administrator.",
+                                    )
                                 } else {
-                                    "自动应用配置失败。"
+                                    t("自动应用配置失败。", "Auto-apply configuration failed.")
                                 };
                                 self.failure(summary, e, true);
                             }
@@ -409,11 +460,18 @@ impl App {
                                     status.info
                                 ));
                                 self.device_status = Some(status);
-                                self.busy_status("设备状态已更新。");
+                                self.busy_status(t("设备状态已更新。", "Adapter status updated."));
                             }
                             Err(e) => {
                                 self.device_status = None;
-                                self.failure("设备操作未成功，请查看日志。", e, false);
+                                self.failure(
+                                    t(
+                                        "设备操作未成功，请查看日志。",
+                                        "Adapter operation failed. See the log.",
+                                    ),
+                                    e,
+                                    false,
+                                );
                             }
                         }
                     }
@@ -423,7 +481,10 @@ impl App {
                 self.receiver = None;
                 self.uncertain = true;
                 self.failure(
-                    "操作中断，设备状态未知。",
+                    t(
+                        "操作中断，设备状态未知。",
+                        "Operation interrupted; adapter status unknown.",
+                    ),
                     "工作线程意外终止；不自动重试。".into(),
                     true,
                 );
@@ -532,12 +593,12 @@ impl App {
         card().show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(RichText::new("适配器").strong());
+                ui.label(RichText::new(t("适配器", "Adapter")).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .add_enabled(
                             self.receiver.is_none() && !self.confirming(),
-                            egui::Button::new("刷新设备"),
+                            egui::Button::new(t("刷新设备", "Refresh")),
                         )
                         .clicked()
                     {
@@ -557,9 +618,9 @@ impl App {
                             .map(|a| adapter_label(a, &self.adapters))
                             .unwrap_or_else(|| {
                                 if self.adapters.is_empty() {
-                                    "未发现 Steam Frame 适配器".into()
+                                    t("未发现 Steam Frame 适配器", "No Steam Frame adapter found").into()
                                 } else {
-                                    "选择适配器".into()
+                                    t("选择适配器", "Select an adapter").into()
                                 }
                             }),
                     )
@@ -577,7 +638,7 @@ impl App {
             let selected = self.selected.and_then(|i| self.adapters.get(i)).cloned();
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("国家").color(MUTED));
+                ui.label(RichText::new(t("国家", "Country")).color(MUTED));
                 pill(
                     ui,
                     self.device_status.as_ref().map_or("—", |s| &s.country),
@@ -589,13 +650,13 @@ impl App {
                     .device_status
                     .as_ref()
                     .map(six_status)
-                    .unwrap_or("未读取");
+                    .unwrap_or(t("未读取", "Not read"));
                 pill(
                     ui,
                     six,
                     match six {
-                        "可用" => GREEN,
-                        "不可用" => AMBER,
+                        "可用" | "Available" => GREEN,
+                        "不可用" | "Unavailable" => AMBER,
                         _ => MUTED,
                     },
                 );
@@ -605,7 +666,7 @@ impl App {
                         && self.receiver.is_none()
                         && !self.confirming()
                         && !self.uncertain;
-                    if primary_button(ui, "设置 US", allowed).clicked() {
+                    if primary_button(ui, t("设置 US", "Set US"), allowed).clicked() {
                         self.confirm = selected.clone();
                     }
                 });
@@ -618,7 +679,7 @@ impl App {
                 ui.add_space(6.0);
                 ui.colored_label(
                     AMBER,
-                    "原国家码未知（00 00）。确认后只发送一次并严格复查；自动应用也会按相同规则处理。",
+                    t("原国家码未知（00 00）。确认后只发送一次并严格复查；自动应用也会按相同规则处理。", "Original country code is unknown (00 00). One setting request will be sent and verified; auto-apply follows the same rule."),
                 );
             }
             if selected
@@ -626,11 +687,11 @@ impl App {
                 .is_some_and(|a| a.supported() && a.unverified_driver)
             {
                 ui.add_space(6.0);
-                ui.colored_label(AMBER, "此驱动版本未验证，仍可操作。");
+                ui.colored_label(AMBER, t("此驱动版本未验证，仍可操作。", "This driver version is unverified; operation is still allowed."));
             }
             if self.uncertain {
                 ui.add_space(6.0);
-                ui.colored_label(RED, "结果不确定。请刷新复查，暂不重复设置。");
+                ui.colored_label(RED, t("结果不确定。请刷新复查，暂不重复设置。", "Result uncertain. Refresh to verify; do not repeat the setting yet."));
             }
         });
     }
@@ -638,15 +699,15 @@ impl App {
         card().show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(RichText::new("自动应用").strong());
+                ui.label(RichText::new(t("自动应用", "Auto-apply")).strong());
                 let (text, color) = match self.auto_state {
-                    Some(s) if s.paused => ("已暂停", RED),
-                    Some(s) if s.running => ("正在处理", BLUE),
-                    Some(s) if s.installed && !s.enabled => ("已停用", AMBER),
-                    Some(s) if s.installed && s.exit_code != 0 => ("上次执行失败", RED),
-                    Some(s) if s.installed => ("已开启", GREEN),
-                    Some(_) => ("未开启", MUTED),
-                    None => ("状态未知", MUTED),
+                    Some(s) if s.paused => (t("已暂停", "Paused"), RED),
+                    Some(s) if s.running => (t("正在处理", "Running"), BLUE),
+                    Some(s) if s.installed && !s.enabled => (t("已停用", "Disabled"), AMBER),
+                    Some(s) if s.installed && s.exit_code != 0 => (t("上次执行失败", "Last run failed"), RED),
+                    Some(s) if s.installed => (t("已开启", "Enabled"), GREEN),
+                    Some(_) => (t("未开启", "Off"), MUTED),
+                    None => (t("状态未知", "Unknown"), MUTED),
                 };
                 pill(ui, text, color);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -660,7 +721,7 @@ impl App {
                                         && self.receiver.is_none()
                                         && !self.confirming(),
                                     egui::Button::new(
-                                        RichText::new("更新服务").color(Color32::WHITE),
+                                        RichText::new(t("更新服务", "Update service")).color(Color32::WHITE),
                                     )
                                     .fill(BLUE),
                                 )
@@ -672,9 +733,9 @@ impl App {
                             .add_enabled(
                                 self.receiver.is_none() && !self.confirming(),
                                 egui::Button::new(if state.installed {
-                                    "关闭并卸载"
+                                    t("关闭并卸载", "Disable and remove")
                                 } else {
-                                    "开启自动应用"
+                                    t("开启自动应用", "Enable auto-apply")
                                 }),
                             )
                             .clicked()
@@ -682,38 +743,52 @@ impl App {
                             self.confirm_auto = Some(!state.installed);
                         }
                     } else {
-                        ui.add_enabled(false, egui::Button::new("开启自动应用"));
+                        ui.add_enabled(false, egui::Button::new(t("开启自动应用", "Enable auto-apply")));
                     }
                 });
             });
             ui.add_space(4.0);
             ui.label(
-                RichText::new("开机、插拔时按需恢复；处理结束后退出。")
+                RichText::new(t("开机、插拔时按需恢复；处理结束后退出。", "Restores on startup or reconnect, then exits."))
                     .small()
                     .color(MUTED),
             );
             if let Some(error) = &self.auto_error {
-                ui.colored_label(RED, error);
+                ui.colored_label(RED, if i18n::is_english() { "Could not read service status. See the log." } else { error });
             }
             if self.auto_state.is_some_and(|s| s.paused) {
-                ui.colored_label(RED, "请检查日志并手动复查，再卸载、重新开启。");
+                ui.colored_label(RED, t("请检查日志并手动复查，再卸载、重新开启。", "Check the log and verify manually, then reinstall the service."));
             }
             if self.auto_state.is_some_and(|s| s.needs_update) {
                 ui.colored_label(
                     AMBER,
-                    "已安装的服务副本与当前程序不同；更新主程序不会自动更新服务。",
+                    t("已安装的服务副本与当前程序不同；更新主程序不会自动更新服务。", "The installed service differs from this program; updating the app does not update the service."),
                 );
             }
         });
     }
     fn log_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("执行日志").strong().size(16.0));
-            ui.label(RichText::new("UTC · 自动更新").small().color(MUTED));
+            ui.label(
+                RichText::new(t("执行日志", "Execution log"))
+                    .strong()
+                    .size(16.0),
+            );
+            ui.label(
+                RichText::new(t("UTC · 自动更新", "UTC · auto-refresh"))
+                    .small()
+                    .color(MUTED),
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add_enabled(!self.confirming(), egui::Button::new("导出日志"))
-                    .on_hover_text("导出程序及服务日志，不受当前筛选影响")
+                    .add_enabled(
+                        !self.confirming(),
+                        egui::Button::new(t("导出日志", "Export log")),
+                    )
+                    .on_hover_text(t(
+                        "导出程序及服务日志，不受当前筛选影响",
+                        "Export program and service logs, regardless of the current filter",
+                    ))
                     .clicked()
                 {
                     self.save();
@@ -722,9 +797,9 @@ impl App {
         });
         ui.horizontal(|ui| {
             for (filter, label) in [
-                (Filter::All, "全部"),
-                (Filter::Program, "程序"),
-                (Filter::Service, "服务"),
+                (Filter::All, t("全部", "All")),
+                (Filter::Program, t("程序", "Program")),
+                (Filter::Service, t("服务", "Service")),
             ] {
                 if ui
                     .selectable_value(&mut self.filter, filter, label)
@@ -734,12 +809,22 @@ impl App {
                 }
             }
             ui.add_space(12.0);
-            if ui.checkbox(&mut self.errors_only, "仅错误").changed() {
+            if ui
+                .checkbox(&mut self.errors_only, t("仅错误", "Errors only"))
+                .changed()
+            {
                 self.logs_dirty = true;
             }
         });
         if let Some(error) = &self.log_error {
-            ui.colored_label(RED, format!("日志未能更新：{error}（保留上次内容）"));
+            ui.colored_label(
+                RED,
+                if i18n::is_english() {
+                    format!("Could not refresh log: {error} (previous content retained)")
+                } else {
+                    format!("日志未能更新：{error}（保留上次内容）")
+                },
+            );
         }
         self.rebuild_logs();
         egui::Frame::new()
@@ -754,9 +839,12 @@ impl App {
                     ui.set_min_height(height);
                     ui.label(
                         RichText::new(if self.errors_only {
-                            "暂无错误记录。"
+                            t("暂无错误记录。", "No errors yet.")
                         } else {
-                            "暂无日志，新的记录会自动显示。"
+                            t(
+                                "暂无日志，新的记录会自动显示。",
+                                "No log entries yet. New entries appear automatically.",
+                            )
                         })
                         .color(MUTED),
                     );
@@ -777,9 +865,9 @@ impl App {
                                 };
                                 let time = row.time.get(11..23).unwrap_or("            ");
                                 let severity = if row.level == Level::Error {
-                                    "错误 "
+                                    t("错误 ", "Error ")
                                 } else if row.level == Level::Warning {
-                                    "提示 "
+                                    t("提示 ", "Notice ")
                                 } else {
                                     ""
                                 };
@@ -791,7 +879,13 @@ impl App {
                                             egui::Label::new(
                                                 RichText::new(format!(
                                                     "{time}  {}  {severity}{}",
-                                                    row.source.label(),
+                                                    t(
+                                                        row.source.label(),
+                                                        match row.source {
+                                                            ui_log::Source::Program => "Program",
+                                                            ui_log::Source::Service => "Service",
+                                                        }
+                                                    ),
                                                     row.text
                                                 ))
                                                 .font(egui::FontId::monospace(13.0))
@@ -812,31 +906,31 @@ impl App {
     fn dialogs(&mut self, ctx: &egui::Context) {
         if let Some(adapter) = self.confirm.clone() {
             egui::Modal::new(egui::Id::new("confirm-us")).frame(card().inner_margin(24.0)).show(ctx, |ui| {
-                ui.set_width(420.0); ui.heading("设置为 US？"); ui.add_space(8.0);
+                ui.set_width(420.0); ui.heading(t("设置为 US？", "Set to US?")); ui.add_space(8.0);
                 ui.label(adapter_label(&adapter, &self.adapters));
                 if self.device_status.as_ref().is_some_and(|s| !s.country_known()) {
-                    ui.colored_label(AMBER, "原国家码未知。确认后仅尝试一次，驱动回复和状态复查均通过才判定成功。");
+                    ui.colored_label(AMBER, t("原国家码未知。确认后仅尝试一次，驱动回复和状态复查均通过才判定成功。", "Original country code unknown. Only one attempt; success requires a valid driver reply and verification."));
                 }
-                ui.label("改变适配器运行时策略，可能启用 6 GHz 或短暂影响连接。只提交一次并复查，不自动回滚。");
-                if adapter.unverified_driver { ui.colored_label(AMBER, "此驱动版本未验证，可能不兼容。"); }
+                ui.label(t("改变适配器运行时策略，可能启用 6 GHz 或短暂影响连接。只提交一次并复查，不自动回滚。", "Changes the adapter's runtime policy. It may enable 6 GHz or briefly disrupt the connection. Sends one request and verifies; no automatic rollback."));
+                if adapter.unverified_driver { ui.colored_label(AMBER, t("此驱动版本未验证，可能不兼容。", "This driver version is unverified and may be incompatible.")); }
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if primary_button(ui, "确认设置", true).clicked() { self.start(adapter, true); }
-                    if ui.add_sized([96.0, 36.0], egui::Button::new("取消")).clicked() { self.confirm = None; }
+                    if primary_button(ui, t("确认设置", "Confirm"), true).clicked() { self.start(adapter, true); }
+                    if ui.add_sized([96.0, 36.0], egui::Button::new(t("取消", "Cancel"))).clicked() { self.confirm = None; }
                 });
             });
         }
         if let Some(install) = self.confirm_auto {
             egui::Modal::new(egui::Id::new("confirm-auto")).frame(card().inner_margin(24.0)).show(ctx, |ui| {
-                ui.set_width(420.0); ui.heading(if install { "开启自动应用？" } else { "关闭并卸载？" }); ui.add_space(8.0);
+                ui.set_width(420.0); ui.heading(if install { t("开启自动应用？", "Enable auto-apply?") } else { t("关闭并卸载？", "Disable and remove?") }); ui.add_space(8.0);
                 ui.label(if install {
-                    "安装 Windows 服务，对本机所有 Steam Frame 适配器自动设置 US。开启后立即检查，之后在开机与插拔时触发。"
-                } else { "停止并移除服务和安装副本。保留 logs 目录，不撤销当前 US 设置。" });
-                if install { ui.colored_label(AMBER, "需管理员权限；未验证驱动也会尝试操作。"); }
+                    t("安装 Windows 服务，对本机所有 Steam Frame 适配器自动设置 US。开启后立即检查，之后在开机与插拔时触发。", "Install a Windows service to set US on all local Steam Frame adapters. Checks now, then on startup and reconnect.")
+                } else { t("停止并移除服务和安装副本。保留 logs 目录，不撤销当前 US 设置。", "Stop and remove the service and its copy. Logs remain; the current US setting is not undone.") });
+                if install { ui.colored_label(AMBER, t("需管理员权限；未验证驱动也会尝试操作。", "Administrator access required; unverified drivers will also be tried.")); }
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if primary_button(ui, if install { "确认开启" } else { "确认卸载" }, true).clicked() { self.set_auto(install); }
-                    if ui.add_sized([96.0, 36.0], egui::Button::new("取消")).clicked() { self.confirm_auto = None; }
+                    if primary_button(ui, if install { t("确认开启", "Enable") } else { t("确认卸载", "Remove") }, true).clicked() { self.set_auto(install); }
+                    if ui.add_sized([96.0, 36.0], egui::Button::new(t("取消", "Cancel"))).clicked() { self.confirm_auto = None; }
                 });
             });
         }
@@ -845,14 +939,14 @@ impl App {
                 .frame(card().inner_margin(24.0))
                 .show(ctx, |ui| {
                     ui.set_width(420.0);
-                    ui.heading("更新自动应用服务？");
-                    ui.label("停止并移除旧服务，再安装当前程序副本。保留执行日志；需管理员权限。");
+                    ui.heading(t("更新自动应用服务？", "Update auto-apply service?"));
+                    ui.label(t("停止并移除旧服务，再安装当前程序副本。保留执行日志；需管理员权限。", "Remove the old service and install a copy of this program. Logs are kept; administrator access required."));
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
-                        if primary_button(ui, "确认更新", true).clicked() {
+                        if primary_button(ui, t("确认更新", "Update"), true).clicked() {
                             self.update_service();
                         }
-                        if ui.button("取消").clicked() {
+                        if ui.button(t("取消", "Cancel")).clicked() {
                             self.confirm_service_update = false;
                         }
                     });
@@ -865,15 +959,15 @@ impl App {
                 .frame(card().inner_margin(24.0))
                 .show(ctx, |ui| {
                     ui.set_width(430.0);
-                    ui.heading(format!("发现新版本 v{}", release.version));
-                    ui.label("请在 Release 页面下载新版程序。关闭本程序后，在安装目录替换旧 EXE。");
-                    ui.label("已安装的自动应用服务不会同步更新；替换后可在主窗口点击“更新服务”。");
+                    ui.heading(if i18n::is_english() { format!("New version v{} available", release.version) } else { format!("发现新版本 v{}", release.version) });
+                    ui.label(t("请在 Release 页面下载新版程序。关闭本程序后，在安装目录替换旧 EXE。", "Download the new version from its Release page. Close this app, then replace the EXE in its folder."));
+                    ui.label(t("已安装的自动应用服务不会同步更新；替换后可在主窗口点击“更新服务”。", "The installed auto-apply service is not updated with the app. After replacing the EXE, click Update service."));
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
-                        if primary_button(ui, "打开 Release 页面", true).clicked() {
+                        if primary_button(ui, t("打开 Release 页面", "Open Release page"), true).clicked() {
                             ui.ctx().open_url(egui::OpenUrl::new_tab(&release.page));
                         }
-                        if ui.button("打开安装目录").clicked() {
+                        if ui.button(t("打开安装目录", "Open app folder")).clicked() {
                             match std::env::current_exe()
                                 .ok()
                                 .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
@@ -882,17 +976,17 @@ impl App {
                                     if let Err(e) =
                                         std::process::Command::new("explorer.exe").arg(dir).spawn()
                                     {
-                                        self.failure("无法打开安装目录。", e.to_string(), true);
+                                        self.failure(t("无法打开安装目录。", "Could not open the app folder."), e.to_string(), true);
                                     }
                                 }
                                 None => self.failure(
-                                    "无法打开安装目录。",
-                                    "无法取得当前程序所在目录。".into(),
+                                    t("无法打开安装目录。", "Could not open the app folder."),
+                                    t("无法取得当前程序所在目录。", "Could not locate this program.").into(),
                                     true,
                                 ),
                             }
                         }
-                        if ui.button("稍后").clicked() {
+                        if ui.button(t("稍后", "Later")).clicked() {
                             self.confirm_update = false;
                         }
                     });
@@ -903,11 +997,17 @@ impl App {
                 .frame(card().inner_margin(24.0))
                 .show(ctx, |ui| {
                     ui.set_width(420.0);
-                    ui.colored_label(RED, RichText::new("操作未完成").heading());
+                    ui.colored_label(
+                        RED,
+                        RichText::new(t("操作未完成", "Operation incomplete")).heading(),
+                    );
                     ui.add_space(8.0);
+                    if i18n::is_english() {
+                        ui.colored_label(RED, "See the diagnostic details below:");
+                    }
                     ui.colored_label(RED, error);
                     ui.add_space(12.0);
-                    if ui.button("知道了").clicked() {
+                    if ui.button(t("知道了", "OK")).clicked() {
                         self.error_popup = None;
                     }
                 });
@@ -924,18 +1024,35 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Steam Frame").size(24.0).strong().color(INK));
                     ui.label(
-                        RichText::new(format!("6 GHz 设置工具 · v{}", env!("CARGO_PKG_VERSION")))
-                            .size(15.0)
-                            .color(MUTED),
+                        RichText::new(format!(
+                            "{} · v{}",
+                            t("6 GHz 设置工具", "6 GHz Tool"),
+                            env!("CARGO_PKG_VERSION")
+                        ))
+                        .size(15.0)
+                        .color(MUTED),
                     );
                     if self.demo {
-                        pill(ui, "演示", AMBER);
+                        pill(ui, t("演示", "Demo"), AMBER);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if github_button(ui, self.github_mark.as_ref()).clicked() {
                             ui.ctx().open_url(egui::OpenUrl::new_tab(frame::REPO));
                         }
-                        if primary_button(ui, "头显设置", true).clicked() && self.frame_ui.is_none()
+                        if ui
+                            .add(egui::Button::new("🌐").min_size(egui::vec2(36.0, 36.0)))
+                            .on_hover_text(t("切换为英语", "Switch to Chinese"))
+                            .clicked()
+                        {
+                            i18n::toggle();
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(
+                                t("Steam Frame 6 GHz 设置工具", "Steam Frame 6 GHz Tool").into(),
+                            ));
+                            self.status = t("已切换为中文。", "Switched to English.").into();
+                            self.status_level = Level::Info;
+                        }
+                        if primary_button(ui, t("头显设置", "Headset settings"), true).clicked()
+                            && self.frame_ui.is_none()
                         {
                             self.frame_ui = Some(frame_ui::FrameUi::new(self.demo));
                         }
@@ -943,9 +1060,16 @@ impl App {
                 });
                 if let Some(release) = &self.available_update {
                     ui.horizontal(|ui| {
-                        ui.label(format!("发现新版本 v{}", release.version));
+                        ui.label(if i18n::is_english() {
+                            format!("New version v{} available", release.version)
+                        } else {
+                            format!("发现新版本 v{}", release.version)
+                        });
                         if ui
-                            .add_enabled(self.frame_ui.is_none(), egui::Button::new("更新程序"))
+                            .add_enabled(
+                                self.frame_ui.is_none(),
+                                egui::Button::new(t("更新程序", "Get update")),
+                            )
                             .clicked()
                         {
                             self.confirm_update = true;
@@ -984,21 +1108,28 @@ impl eframe::App for App {
             && ctx.input(|i| i.viewport().close_requested())
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.status = "操作尚未结束，请稍候再关闭窗口。".into();
+            self.status = t(
+                "操作尚未结束，请稍候再关闭窗口。",
+                "Operation still running. Wait before closing.",
+            )
+            .into();
         }
         self.draw(ctx);
         if let Some(child) = &mut self.frame_ui {
             let close = ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of("frame-settings"),
                 egui::ViewportBuilder::default()
-                    .with_title("Steam Frame · 头显设置")
+                    .with_title(t(
+                        "Steam Frame · 头显设置",
+                        "Steam Frame · Headset settings",
+                    ))
                     .with_inner_size([680.0, 650.0])
                     .with_min_inner_size([560.0, 520.0]),
                 |child_ctx, _| child.draw(child_ctx),
             );
             let lines = child.take_log();
             for line in lines {
-                self.record(&format!("头显：{line}"));
+                self.record(&format!("{}：{line}", t("头显", "Headset")));
             }
             if close {
                 self.frame_ui = None;
@@ -1118,7 +1249,7 @@ fn github_button(ui: &mut egui::Ui, mark: Option<&egui::TextureHandle>) -> egui:
         egui::Button::new("GitHub")
     };
     ui.add(button.min_size(egui::vec2(36.0, 36.0)))
-        .on_hover_text("打开 GitHub 仓库")
+        .on_hover_text(t("打开 GitHub 仓库", "Open GitHub repository"))
 }
 fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
     ui.scope(|ui| {
@@ -1153,9 +1284,12 @@ fn pill(ui: &mut egui::Ui, text: &str, color: Color32) {
 }
 fn adapter_label(adapter: &Adapter, all: &[Adapter]) -> String {
     let name = if !adapter.name.contains("模拟") {
-        "Steam Frame USB 适配器"
+        t("Steam Frame USB 适配器", "Steam Frame USB adapter")
     } else {
-        "Steam Frame USB 适配器（演示）"
+        t(
+            "Steam Frame USB 适配器（演示）",
+            "Steam Frame USB adapter (demo)",
+        )
     };
     if all.len() > 1 {
         format!(
@@ -1172,19 +1306,27 @@ fn six_status(status: &protocol::Status) -> &'static str {
         .lines()
         .any(|l| l.trim().starts_with("6G NOT Support"))
     {
-        "不可用"
+        t("不可用", "Unavailable")
     } else if status
         .info
         .lines()
         .any(|l| l.trim().starts_with("6G Support (domain:"))
     {
-        "可用"
+        t("可用", "Available")
     } else {
-        "未知（见日志）"
+        t("未知（见日志）", "Unknown (see log)")
     }
 }
 fn status_summary(status: &protocol::Status) -> String {
-    format!("国家：{}     6 GHz：{}", status.country, six_status(status))
+    if i18n::is_english() {
+        format!(
+            "Country: {}     6 GHz: {}",
+            status.country,
+            six_status(status)
+        )
+    } else {
+        format!("国家：{}     6 GHz：{}", status.country, six_status(status))
+    }
 }
 fn demo_adapter() -> Adapter {
     Adapter {
@@ -1220,13 +1362,13 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     if !args.is_empty() && args != ["--demo"] {
-        rfd::MessageDialog::new().set_title("参数错误")
-            .set_description("支持无参数启动、--demo 演示、--list 只读枚举；--service 仅由 Windows 服务管理器调用。").show();
+        rfd::MessageDialog::new().set_title(t("参数错误", "Invalid arguments"))
+            .set_description(t("支持无参数启动、--demo 演示、--list 只读枚举；--service 仅由 Windows 服务管理器调用。", "Start without arguments, or use --demo / --list. --service is reserved for Windows Service Manager.")).show();
         return Ok(());
     }
     let demo = args == ["--demo"];
     eframe::run_native(
-        "Steam Frame 6 GHz 设置工具",
+        t("Steam Frame 6 GHz 设置工具", "Steam Frame 6 GHz Tool"),
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_icon(egui::IconData::default())

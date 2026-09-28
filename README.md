@@ -1,16 +1,32 @@
-# Steam Frame 6 GHz 设置工具
+<h1 align="center">Steam Frame 6 GHz 设置工具</h1>
 
-[![构建状态](https://github.com/toorux/steam-frame-6ghz-tool/actions/workflows/release.yml/badge.svg)](https://github.com/toorux/steam-frame-6ghz-tool/actions/workflows/release.yml) ![Windows x64](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4) ![Steam Frame](https://img.shields.io/badge/Steam%20Frame-USB%20Adapter-1B2838)
+<p align="center">查看 Steam Frame USB 适配器的国家码和 6 GHz 状态，并将运行地区设置为 US。</p>
 
+<p align="center"><a href="README.md">简体中文</a> · <a href="README.en.md">English</a></p>
 
+<p align="center">
+  <a href="https://github.com/toorux/steam-frame-6ghz-tool/actions/workflows/release.yml"><img src="https://github.com/toorux/steam-frame-6ghz-tool/actions/workflows/release.yml/badge.svg" alt="构建状态"></a>
+  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4" alt="Windows x64">
+  <a href="https://github.com/toorux/steam-frame-6ghz-tool/releases"><img src="https://img.shields.io/github/v/release/toorux/steam-frame-6ghz-tool?include_prereleases=true" alt="最新版本"></a>
+</p>
 
-用于查看 Steam Frame USB 适配器的国家码和 6 GHz 状态，并将运行地区设置为 US。
+<p align="center">程序不会修改驱动文件，仅支持 Windows 10/11 x64。</p>
 
-程序不会修改驱动文件，仅支持 Windows 10/11 x64。
+## 目录
 
+- [开始使用](#开始使用)
+- [自动应用](#自动应用)
+- [头显设置](#头显设置)
+  - [使用程序设置](#使用程序设置)
+    - [如何查看 Frame IP](#如何查看-frame-ip)
+    - [Frame 如何开启SSH](#frame-如何开启ssh)
+  - [手动设置](#手动设置)
+- [常见问题](#常见问题)
+- [注意](#注意)
+- [构建](#构建)
+- [发布](#发布)
 
-
-## 使用
+## 开始使用
 
 从 [Releases](https://github.com/toorux/steam-frame-6ghz-tool/releases) 下载程序；若下载的是压缩包，先解压到固定目录。
 
@@ -25,8 +41,6 @@
 > [!TIP]
 > 如果 Windows 适配器已显示 `US`，头显仍无法连接，参见[头显设置](#头显设置)。
 
-
-
 ## 自动应用
 
 > 由于电脑重启或适配器重新插拔后设置可能失效，需要再次操作。若不想每次手动设置，可以开启“自动应用”。
@@ -40,15 +54,11 @@
 - 程序更新后，如服务副本与当前程序不同，“更新服务”按钮会高亮；确认后可一键重装，日志保留。服务正在执行或已暂停时不会自动重装。
 - 未验证驱动版本会尝试执行，但不保证有效。
 
-
-
 ## 头显设置
 
 如果 Windows 适配器已显示 `US`、`6 GHz 可用`，但 Frame 仍无法连接，可以进一步检查头显的无线监管区域。
 
 下方提供程序设置和手动设置两种方式；不熟悉命令行，建议选择程序设置。
-
-
 
 ### 使用程序设置
 
@@ -65,8 +75,6 @@
 
 程序不会收集、保存或上传密码；密码仅在本机内存中用于本次 SSH／sudo 验证，不写入日志。
 
-
-
 #### 如何查看 Frame IP
 
 在头显中打开“设置 → 互联网”，查看与电脑网络互通的已连接网络。下图以 Wi-Fi 为例；使用有线连接时也可查看其 IP。
@@ -76,8 +84,6 @@
 在网络详情的“IPv4 地址”区域，找到“IP 地址”一行，把该地址填入程序的“头显 IP 地址”输入框；不要填 MAC 地址或子网掩码。图片中的网络名称、MAC 和实际 IP 均已遮盖。
 
 ![在已连接网络的详情中查看 IPv4 地址](docs/images/frame-ip-details-annotated.png)
-
-
 
 #### Frame 如何开启SSH
 
@@ -96,8 +102,6 @@ ssh steamos@frame
 ```
 
 若主机名 `frame` 无法解析，按[如何查看 Frame IP](#如何查看-frame-ip)找到头显地址，再执行 `ssh steamos@<头显IP>`。登录密码就是上一步设置的用户密码。
-
-
 
 ### 手动设置
 
@@ -151,15 +155,11 @@ sudo sed -i 's/^WIRELESS_REGDOM="US"$/#WIRELESS_REGDOM="US"/' /etc/conf.d/wirele
 sudo reboot
 ```
 
-
-
 ## 常见问题
 
 - 未找到适配器：检查连接和驱动，再点击“刷新设备”。
 - 提示权限不足：以管理员身份重新运行程序。
 - 未找到头显：确认电脑与头显在同一局域网且 SSH 已开启，或手动输入头显 IP。
-
-
 
 ## 注意
 
@@ -167,10 +167,8 @@ sudo reboot
 - 支持 Windows 10/11 x64。已验证原厂驱动 `5.32.908.2026`；其他版本仅提示未验证，不限制操作。
 - 设置仅影响运行时状态，不会永久写入适配器；未开启自动应用时，重启或重新插拔后可能需要再次设置。
 - 使用时关闭其他适配器诊断工具。操作失败或结果不确定时，先查看日志，稍后刷新查询。
+- 语言切换只影响界面；驱动和服务日志保留原文。
 - 仅用于授权的屏蔽实验环境。设置 US 会改变无线运行策略，请遵守所在地无线电规定。
-
-
-
 
 ## 构建
 
