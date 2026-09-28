@@ -1,6 +1,8 @@
+<p align="center"><img src="assets/icon.png" alt="Steam Frame 6 GHz Tool icon" width="128"></p>
+
 <h1 align="center">Steam Frame 6 GHz Tool</h1>
 
-<p align="center">View the country code and 6 GHz status of a Steam Frame USB adapter, and set its runtime region to US.</p>
+<p align="center">View the country code and 6 GHz status of a Steam Frame USB adapter, and set its runtime region to US. The tool does not modify driver files and supports Windows 10/11 x64 only.</p>
 
 <p align="center"><a href="README.md">简体中文</a> · <a href="README.en.md">English</a></p>
 
@@ -9,8 +11,6 @@
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4" alt="Windows x64">
   <a href="https://github.com/toorux/steam-frame-6ghz-tool/releases"><img src="https://img.shields.io/github/v/release/toorux/steam-frame-6ghz-tool" alt="Latest release"></a>
 </p>
-
-<p align="center">The tool does not modify driver files. It supports Windows 10/11 x64 only.</p>
 
 ## Contents
 
@@ -28,7 +28,7 @@
 
 ## Getting started
 
-Download the program from [Releases](https://github.com/toorux/steam-frame-6ghz-tool/releases). If it comes in an archive, extract it to a fixed folder first.
+Download the latest program from [Releases](https://github.com/toorux/steam-frame-6ghz-tool/releases). We recommend keeping it in a dedicated folder; when run, the program creates a `logs` folder alongside itself.
 
 1. Plug in the adapter and run `steam-frame-6ghz-tool.exe` as administrator.
 2. If one matching adapter is found, it is selected and queried automatically. If several are found, select one to query it.

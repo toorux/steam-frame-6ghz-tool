@@ -18,7 +18,10 @@ use i18n::t;
 use std::{
     fs,
     path::PathBuf,
-    sync::mpsc::{self, Receiver},
+    sync::{
+        Arc, OnceLock,
+        mpsc::{self, Receiver},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -1119,6 +1122,7 @@ impl eframe::App for App {
             let close = ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of("frame-settings"),
                 egui::ViewportBuilder::default()
+                    .with_icon(app_icon())
                     .with_title(t(
                         "Steam Frame · 头显设置",
                         "Steam Frame · Headset settings",
@@ -1223,6 +1227,24 @@ fn card() -> egui::Frame {
         .stroke(egui::Stroke::new(1.0, BORDER))
         .corner_radius(10)
         .inner_margin(16.0)
+}
+fn app_icon() -> Arc<egui::IconData> {
+    static ICON: OnceLock<Arc<egui::IconData>> = OnceLock::new();
+    ICON.get_or_init(|| {
+        let rgba = image::load_from_memory_with_format(
+            include_bytes!("../assets/icon.png"),
+            image::ImageFormat::Png,
+        )
+        .expect("embedded application icon is a valid PNG")
+        .resize_exact(256, 256, image::imageops::FilterType::Lanczos3)
+        .to_rgba8();
+        Arc::new(egui::IconData {
+            rgba: rgba.into_raw(),
+            width: 256,
+            height: 256,
+        })
+    })
+    .clone()
 }
 fn load_github_mark(ctx: &egui::Context) -> egui::TextureHandle {
     // GitHub's mark, downscaled from github.githubassets.com/images/modules/logos_page/GitHub-Mark.png.
@@ -1371,7 +1393,7 @@ fn main() -> eframe::Result {
         t("Steam Frame 6 GHz 设置工具", "Steam Frame 6 GHz Tool"),
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_icon(egui::IconData::default())
+                .with_icon(app_icon())
                 .with_inner_size([820.0, 720.0])
                 .with_min_inner_size([680.0, 620.0]),
             ..Default::default()
@@ -1383,6 +1405,12 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod ui_tests {
     use super::*;
+    #[test]
+    fn embedded_app_icon_loads() {
+        let icon = app_icon();
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+    }
     #[test]
     fn embedded_github_mark_loads() {
         let mark = load_github_mark(&egui::Context::default());

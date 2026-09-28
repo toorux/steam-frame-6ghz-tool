@@ -1,6 +1,8 @@
+<p align="center"><img src="assets/icon.png" alt="Steam Frame 6 GHz 设置工具图标" width="128"></p>
+
 <h1 align="center">Steam Frame 6 GHz 设置工具</h1>
 
-<p align="center">查看 Steam Frame USB 适配器的国家码和 6 GHz 状态，并将运行地区设置为 US。</p>
+<p align="center">查看 Steam Frame USB 适配器的国家码和 6 GHz 状态，并将运行地区设置为 US。程序不会修改驱动文件，仅支持 Windows 10/11 x64。</p>
 
 <p align="center"><a href="README.md">简体中文</a> · <a href="README.en.md">English</a></p>
 
@@ -10,7 +12,6 @@
   <a href="https://github.com/toorux/steam-frame-6ghz-tool/releases"><img src="https://img.shields.io/github/v/release/toorux/steam-frame-6ghz-tool" alt="最新版本"></a>
 </p>
 
-<p align="center">程序不会修改驱动文件，仅支持 Windows 10/11 x64。</p>
 
 ## 目录
 
@@ -28,7 +29,7 @@
 
 ## 开始使用
 
-从 [Releases](https://github.com/toorux/steam-frame-6ghz-tool/releases) 下载程序；若下载的是压缩包，先解压到固定目录。
+从 [Releases](https://github.com/toorux/steam-frame-6ghz-tool/releases) 下载最新程序；下载后建议放到一个单独的文件夹中，程序运行后会在运行目录下创建 `logs` 文件夹。
 
 1. 插入适配器，以管理员身份运行 `steam-frame-6ghz-tool.exe`。
 2. 只有一个匹配设备时自动选中并查询状态；多个设备时，选择后自动查询。

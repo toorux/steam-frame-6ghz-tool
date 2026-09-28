@@ -1,6 +1,6 @@
 [package]
 name = "steam-frame-6ghz-tool"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Steam Frame 6 GHz 设置工具"
@@ -19,6 +19,9 @@ ssh2 = "0.9.6"
 ureq = { version = "3.4", features = ["json", "win-system-proxy"] }
 zeroize = "1"
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_WiFi", "Win32_NetworkManagement_Ndis", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_LibraryLoader", "Win32_System_Services", "Win32_System_Com", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_UI_Shell"] }
+
+[build-dependencies]
+winres = "0.1.12"
 
 [profile.release]
 strip = true
