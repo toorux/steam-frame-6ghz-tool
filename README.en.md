@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/toorux/steam-frame-6ghz-tool/actions/workflows/release.yml"><img src="https://github.com/toorux/steam-frame-6ghz-tool/actions/workflows/release.yml/badge.svg" alt="Build status"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4" alt="Windows x64">
-  <a href="https://github.com/toorux/steam-frame-6ghz-tool/releases"><img src="https://img.shields.io/github/v/release/toorux/steam-frame-6ghz-tool?include_prereleases=true" alt="Latest release"></a>
+  <a href="https://github.com/toorux/steam-frame-6ghz-tool/releases"><img src="https://img.shields.io/github/v/release/toorux/steam-frame-6ghz-tool" alt="Latest release"></a>
 </p>
 
 <p align="center">The tool does not modify driver files. It supports Windows 10/11 x64 only.</p>

@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/toorux/steam-frame-6ghz-tool/actions/workflows/release.yml"><img src="https://github.com/toorux/steam-frame-6ghz-tool/actions/workflows/release.yml/badge.svg" alt="构建状态"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4" alt="Windows x64">
-  <a href="https://github.com/toorux/steam-frame-6ghz-tool/releases"><img src="https://img.shields.io/github/v/release/toorux/steam-frame-6ghz-tool?include_prereleases=true" alt="最新版本"></a>
+  <a href="https://github.com/toorux/steam-frame-6ghz-tool/releases"><img src="https://img.shields.io/github/v/release/toorux/steam-frame-6ghz-tool" alt="最新版本"></a>
 </p>
 
 <p align="center">程序不会修改驱动文件，仅支持 Windows 10/11 x64。</p>
