@@ -19,11 +19,12 @@ use std::{
     time::Duration,
 };
 use windows_sys::Win32::{
-    Foundation::ERROR_BUFFER_OVERFLOW,
+    Foundation::{ERROR_BUFFER_OVERFLOW, INVALID_HANDLE_VALUE},
     NetworkManagement::{
         IpHelper::{
             GetAdaptersAddresses, IF_TYPE_ETHERNET_CSMACD, IF_TYPE_IEEE80211,
-            IP_ADAPTER_ADDRESSES_LH,
+            ICMP_ECHO_REPLY, IP_ADAPTER_ADDRESSES_LH, IcmpCloseHandle, IcmpCreateFile,
+            IcmpSendEcho,
         },
         Ndis::IfOperStatusUp,
     },
@@ -35,6 +36,8 @@ pub const SSH_HELP: &str = "https://github.com/toorux/steam-frame-6ghz-tool#fram
 pub const SSH_HELP_EN: &str =
     "https://github.com/toorux/steam-frame-6ghz-tool/blob/main/README.en.md#enabling-ssh-on-frame";
 pub const REPO: &str = "https://github.com/toorux/steam-frame-6ghz-tool";
+pub const IP_HELP: &str = "https://github.com/toorux/steam-frame-6ghz-tool#如何查看-frame-ip";
+pub const IP_HELP_EN: &str = "https://github.com/toorux/steam-frame-6ghz-tool/blob/main/README.en.md#finding-the-frame-ip";
 const CONFIG: &str = "/etc/conf.d/wireless-regdom";
 pub const COMMANDS: &str = "sudo -S -p '' true  # 验证 sudo 权限\nsudo -S -p '' cat /etc/conf.d/wireless-regdom  # 预检，不写入\nsudo -S -p '' /usr/sbin/iw reg set US\n# 如果尚未启用 US，则执行：\nsudo -S -p '' sed -i 's/^#WIRELESS_REGDOM=\"US\"$/WIRELESS_REGDOM=\"US\"/' /etc/conf.d/wireless-regdom\nsudo -S -p '' cat /etc/conf.d/wireless-regdom  # 复查\ngrep -n '^WIRELESS_REGDOM=' /etc/conf.d/wireless-regdom\n/usr/sbin/iw reg get";
 pub const COMMANDS_EN: &str = "sudo -S -p '' true  # Check sudo access\nsudo -S -p '' cat /etc/conf.d/wireless-regdom  # Preflight; read only\nsudo -S -p '' /usr/sbin/iw reg set US\n# Only if US is not already enabled:\nsudo -S -p '' sed -i 's/^#WIRELESS_REGDOM=\"US\"$/WIRELESS_REGDOM=\"US\"/' /etc/conf.d/wireless-regdom\nsudo -S -p '' cat /etc/conf.d/wireless-regdom  # Verify\ngrep -n '^WIRELESS_REGDOM=' /etc/conf.d/wireless-regdom\n/usr/sbin/iw reg get";
@@ -192,11 +195,22 @@ fn reverse_name(ip: Ipv4Addr) -> Option<String> {
     Some(String::from_utf8_lossy(&text[..end]).into_owned())
 }
 pub fn ssh_open(ip: Ipv4Addr) -> bool {
+    ssh_open_with_timeout(ip, Duration::from_millis(550))
+}
+fn ssh_open_with_timeout(ip: Ipv4Addr, timeout: Duration) -> bool {
     TcpStream::connect_timeout(
         &SocketAddr::new(IpAddr::V4(ip), 22),
-        Duration::from_millis(550),
+        timeout,
     )
     .is_ok()
+}
+fn ping(ip: Ipv4Addr, handle: windows_sys::Win32::Foundation::HANDLE) -> bool {
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE { return false; }
+    let data = [0u8; 1];
+    let mut reply = [0u64; 16];
+    let count = unsafe { IcmpSendEcho(handle, u32::from(ip).to_be(), data.as_ptr().cast(), 1,
+        std::ptr::null(), reply.as_mut_ptr().cast(), (reply.len() * 8) as u32, 180) };
+    count > 0 && unsafe { (*(reply.as_ptr().cast::<ICMP_ECHO_REPLY>())).Status == 0 }
 }
 pub fn start_scan(nets: Vec<Network>) -> Scan {
     let total = nets.iter().map(|n| n.host_count()).sum();
@@ -208,23 +222,28 @@ pub fn start_scan(nets: Vec<Network>) -> Scan {
     let count = progress.clone();
     let finished = done.clone();
     thread::spawn(move || {
-        let mut known = vec![];
-        for name in ["frame:22", "frame.local:22"] {
-            if let Ok(addresses) = name.to_socket_addrs() {
-                for address in addresses {
-                    if let IpAddr::V4(ip) = address.ip()
-                        && nets.iter().any(|n| n.contains(ip))
-                        && !known.contains(&ip)
-                    {
-                        known.push(ip);
-                        let _ = tx.send(Candidate {
-                            ip,
-                            ssh_open: ssh_open(ip),
-                        });
+        let (resolved_tx, resolved_rx) = mpsc::channel();
+        let direct_tx = tx.clone();
+        let direct_nets = nets.clone();
+        let direct_stop = stop.clone();
+        thread::spawn(move || {
+            let mut known = vec![];
+            for name in ["frame:22", "frame.local:22"] {
+                if direct_stop.load(Ordering::Relaxed) { break; }
+                if let Ok(addresses) = name.to_socket_addrs() {
+                    for address in addresses {
+                        if let IpAddr::V4(ip) = address.ip()
+                            && direct_nets.iter().any(|n| n.contains(ip))
+                            && !known.contains(&ip)
+                        {
+                            known.push(ip);
+                            let _ = direct_tx.send(Candidate { ip, ssh_open: ssh_open(ip) });
+                        }
                     }
                 }
             }
-        }
+            let _ = resolved_tx.send(());
+        });
         let next = AtomicU64::new(0);
         thread::scope(|scope| {
             for _ in 0..24 {
@@ -234,6 +253,7 @@ pub fn start_scan(nets: Vec<Network>) -> Scan {
                 let nets = &nets;
                 let next = &next;
                 scope.spawn(move || {
+                    let icmp = unsafe { IcmpCreateFile() };
                     loop {
                         if stop.load(Ordering::Relaxed) {
                             break;
@@ -253,17 +273,21 @@ pub fn start_scan(nets: Vec<Network>) -> Scan {
                         }) else {
                             break;
                         };
-                        if reverse_name(ip).is_some_and(|n| is_frame_name(&n)) {
+                        let reachable = ping(ip, icmp);
+                        let ssh = if reachable { false } else { ssh_open_with_timeout(ip, Duration::from_millis(180)) };
+                        if (reachable || ssh) && reverse_name(ip).is_some_and(|n| is_frame_name(&n)) {
                             let _ = tx.send(Candidate {
                                 ip,
-                                ssh_open: ssh_open(ip),
+                                ssh_open: ssh || ssh_open(ip),
                             });
                         }
                         count.fetch_add(1, Ordering::Relaxed);
                     }
+                    if !icmp.is_null() && icmp != INVALID_HANDLE_VALUE { unsafe { IcmpCloseHandle(icmp); } }
                 });
             }
         });
+        if !stop.load(Ordering::Relaxed) { let _ = resolved_rx.recv_timeout(Duration::from_secs(2)); }
         finished.store(true, Ordering::Release);
     });
     Scan {

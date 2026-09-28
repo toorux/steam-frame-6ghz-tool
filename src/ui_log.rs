@@ -125,6 +125,27 @@ pub fn merge(program: &str, service: &str) -> Vec<Row> {
     rows
 }
 
+/// Convert a stored UTC timestamp for display only; exported logs remain UTC.
+pub fn local_time(stamp: &str) -> String {
+    use windows_sys::Win32::{Foundation::SYSTEMTIME, System::Time::SystemTimeToTzSpecificLocalTime};
+    let parsed = || -> Option<SYSTEMTIME> {
+        if stamp.len() != 24 || !stamp.ends_with('Z') { return None; }
+        let part = |start, end| stamp.get(start..end)?.parse().ok();
+        Some(SYSTEMTIME {
+            wYear: part(0, 4)?, wMonth: part(5, 7)?, wDayOfWeek: 0,
+            wDay: part(8, 10)?, wHour: part(11, 13)?, wMinute: part(14, 16)?,
+            wSecond: part(17, 19)?, wMilliseconds: part(20, 23)?,
+        })
+    };
+    let Some(utc) = parsed() else { return stamp.to_owned(); };
+    let mut local = utc;
+    if unsafe { SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) } == 0 {
+        return stamp.to_owned();
+    }
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+        local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute, local.wSecond, local.wMilliseconds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +183,13 @@ mod tests {
             assert_eq!(level(text), Level::Info);
         }
         assert_eq!(level("驱动版本未验证"), Level::Warning);
+    }
+
+    #[test]
+    fn timestamps_are_localized_only_for_display() {
+        let stored = "2026-09-26T08:00:02.000Z";
+        assert_eq!(local_time("invalid"), "invalid");
+        assert!(!local_time(stored).ends_with('Z'));
+        assert_eq!(merge(&format!("[{stored}] event"), "")[0].time, stored);
     }
 }

@@ -28,7 +28,7 @@ jobs:
       run:
         shell: pwsh
     env:
-      RUSTUP_TOOLCHAIN: 1.92.0-x86_64-pc-windows-msvc
+      RUSTUP_TOOLCHAIN: 1.98.0-x86_64-pc-windows-msvc
       CARGO_TERM_COLOR: always
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
