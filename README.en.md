@@ -30,7 +30,7 @@
 
 Download the latest program from [Releases](https://github.com/toorux/steam-frame-6ghz-tool/releases). We recommend keeping it in a dedicated folder; when run, the program creates a `logs` folder alongside itself.
 
-1. Plug in the adapter and run `steam-frame-6ghz-tool.exe` as administrator.
+1. Plug in the adapter, run `steam-frame-6ghz-tool.exe`, and approve the administrator prompt.
 2. If one matching adapter is found, it is selected and queried automatically. If several are found, select one to query it.
 3. To change the adapter region, click **Set US** and confirm. The tool sends one request and verifies the result.
 
@@ -45,7 +45,7 @@ The screenshot shows an adapter already set to US with auto-apply enabled. The y
 
 The adapter's runtime setting may be lost after a reboot or unplugging it. Auto-apply restores it when needed.
 
-Run the tool as administrator, click **Enable auto-apply**, and confirm. It checks immediately and later on startup or adapter reconnect. The service exits after processing; it does not stay running in the background. The screenshot above shows it enabled at ③.
+Run the tool and approve the administrator prompt, then click **Enable auto-apply** and confirm. It checks immediately and later on startup or adapter reconnect. The service exits after processing; it does not stay running in the background. The screenshot above shows it enabled at ③.
 
 - Logs are stored in the `logs` folder beside the program. Re-enable the service after moving the program.
 - At most 20 log files are kept. They do not contain Wi-Fi passwords.
@@ -152,7 +152,7 @@ sudo reboot
 ## Common problems
 
 - **Adapter not found:** Check the connection and driver, then click **Refresh**.
-- **Access denied:** Restart the tool as administrator.
+- **Access denied:** Make sure you approved the administrator prompt when launching the app.
 - **Headset not found:** Confirm that the PC and headset are on the same LAN and SSH is enabled, or enter the headset IP manually.
 
 ## Notes

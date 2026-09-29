@@ -274,7 +274,7 @@ impl Render for Dashboard {
             .flex().items_center()
             .child(div().id("chrome-drag").h_full().flex_1().flex().items_center().gap_3().pl_5()
                 .child(img(Arc::new(Image::from_bytes(ImageFormat::Ico, include_bytes!("../assets/icon.ico").to_vec()))).size(px(34.)))
-                .child(Self::label("Steam Frame 6GHz Tool").text_lg())
+                .child(Self::label(crate::WINDOW_TITLE).text_lg())
                 .child(Self::muted(format!("v{}", env!("CARGO_PKG_VERSION"))))
                 .window_control_area(WindowControlArea::Drag))
             .child(Button::new("language").icon(Icon::default().data(include_bytes!("../assets/languages.svg"))).ghost()
@@ -400,7 +400,7 @@ pub(crate) fn open(demo: bool) {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(720.), px(840.)), cx))),
             is_resizable: false,
-            titlebar: Some(TitlebarOptions { title: Some("Steam Frame 6GHz Tool".into()), ..TitleBar::title_bar_options() }),
+            titlebar: Some(TitlebarOptions { title: Some(crate::WINDOW_TITLE.into()), ..TitleBar::title_bar_options() }),
             ..TitleBar::window_options()
         };
         cx.open_window(options, |window, cx| {
