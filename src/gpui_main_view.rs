@@ -1,5 +1,5 @@
 use gpui_kit::{prelude::*, *};
-use gpui_kit::component::{Disableable, Icon, Root, Sizable, TitleBar, button::{Button, ButtonVariants}, checkbox::Checkbox, scroll::{Scrollbar, ScrollbarMode}};
+use gpui_kit::component::{Disableable, Icon, Root, Sizable, TitleBar, button::{Button, ButtonVariants}, checkbox::Checkbox, scroll::ScrollbarMode};
 use gpui_kit::component::theme::{Theme, ThemeMode};
 use std::sync::Arc;
 
@@ -89,15 +89,13 @@ impl Dashboard {
         div().text_color(rgb(MUTED)).text_sm().child(text.into())
     }
     fn log_panel(&self, cx: &mut Context<Self>) -> Div {
-        let mut log_list = div().flex().flex_col().gap_1();
-        for &index in self.data.visible_rows.iter().rev().take(300).rev() {
+        let mut log_rows = Vec::new();
+        for &index in &self.data.visible_rows {
             let row = &self.data.rows[index];
-            let color = if row.level == Level::Error { ERROR } else { INK };
             let source = if i18n::is_english() {
                 if row.source == ui_log::Source::Service { "Service" } else { "App" }
             } else { row.source.label() };
-            log_list = log_list.child(div().text_color(rgb(color)).text_sm()
-                .child(format!("{}  {}  {}", ui_log::local_time(&row.time), source, row.text)));
+            log_rows.push((format!("{}  {}  {}", ui_log::local_time(&row.time), source, row.text), row.level == Level::Error));
         }
         let filter = |active| div().rounded_md().bg(rgb(if active { 0xffffff } else { 0xf0f4f7 }));
         Self::card().min_h(px(0.))
@@ -116,13 +114,8 @@ impl Dashboard {
                     .on_change(cx.listener(|this, checked, _, cx| { this.data.errors_only = *checked; this.data.logs_dirty = true; cx.notify(); })))
                 .child(Button::new("export-log").label(t("导出日志", "Export log")).ghost().small().text_color(rgb(MUTED))
                     .on_click(cx.listener(|this, _, _, cx| { this.data.save(); cx.notify(); }))))
-            .child(div().relative().min_h(px(0.)).flex_1()
-                .child(div().id("log-scroll").size_full().overflow_y_scroll().track_scroll(&self.log_scroll).child(log_list))
-                .child(div().absolute().inset_0().child(Scrollbar::vertical(&self.log_scroll)
-                    .mode(ScrollbarMode::Always).viewport_from_layout()
-                    .styles(|styles| styles
-                        .track(|track| track.bg(rgb(0xe6eef2).into()).width(px(8.)))
-                        .thumb(|thumb| thumb.bg(rgb(0x718c9b)).width(px(8.)).radius(px(4.)))))))
+            .child(crate::gpui_log::pane("log-scroll", &self.log_scroll,
+                crate::gpui_log::text("activity-text", log_rows)))
     }
     fn modal_view(&self, cx: &mut Context<Self>) -> Option<Div> {
         let modal = self.modal?;

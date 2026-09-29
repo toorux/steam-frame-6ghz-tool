@@ -3,6 +3,7 @@
 mod backend;
 mod frame;
 mod gpui_frame;
+mod gpui_log;
 mod gpui_state;
 mod i18n;
 mod logs;

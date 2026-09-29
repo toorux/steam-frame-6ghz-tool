@@ -44,6 +44,8 @@ pub struct Row {
 
 pub fn level(text: &str) -> Level {
     if text.contains("[ERROR]")
+        || text.strip_prefix("[exit ").and_then(|s| s.strip_suffix(']'))
+            .and_then(|s| s.parse::<i32>().ok()).is_some_and(|code| code != 0)
         || text.contains("Err(")
         || text.contains("uncertain=true")
         || [
@@ -63,6 +65,8 @@ pub fn level(text: &str) -> Level {
             "错误 ",
             "Error:",
             "error:",
+            "Permission denied",
+            "No such file or directory",
         ]
         .iter()
         .any(|s| text.contains(s))

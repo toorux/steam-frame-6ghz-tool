@@ -1,5 +1,5 @@
 use gpui_kit::{prelude::*, *};
-use gpui_kit::component::{Disableable, Icon, Sizable, button::{Button, ButtonVariants}, checkbox::Checkbox, input::{Input, InputState}, scroll::{ScrollableElement, Scrollbar, ScrollbarMode}};
+use gpui_kit::component::{Disableable, Icon, Sizable, button::{Button, ButtonVariants}, checkbox::Checkbox, input::{Input, InputState}, scroll::ScrollableElement};
 
 const INK: u32 = 0x1f3445;
 const MUTED: u32 = 0x526c7c;
@@ -78,6 +78,17 @@ impl FrameView {
         self.workflow.relocalize_status();
         cx.notify();
     }
+    fn export_log(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().add_filter(t("日志", "Log"), &["txt"])
+            .set_file_name("steam-frame-headset-log.txt").save_file()
+            && let Err(error) = std::fs::write(&path, format!("\u{feff}{}\n", self.workflow.lines.join("\n"))) {
+                self.workflow.error_dialog = Some(format!("{} {error}", t("日志导出失败。", "Could not export the log.")));
+                self.workflow.result = Some(frame::SetupResult::Failed);
+                let line = format!("[ERROR] {} {error}", t("日志导出失败。", "Could not export the log."));
+                self.workflow.lines.push(line.clone());
+                self.workflow.exported.push(line);
+        }
+    }
     fn card() -> Div {
         div().w_full().rounded_lg().border_1().border_color(rgb(BORDER)).bg(rgb(0xffffff))
             .p_4().flex().flex_col().gap_3()
@@ -128,11 +139,12 @@ impl Render for FrameView {
                 .tooltip(t("重新扫描", "Rescan"))
                 .on_click(cx.listener(|this, _, _, cx| { this.workflow.scan(); cx.notify(); })));
         let body = div().id("frame-content").flex_shrink_0().max_h(px(570.)).min_w(px(0.)).overflow_y_scroll()
-            .text_color(rgb(INK)).flex().flex_col().items_center().p_3().gap_1()
-            .child(Self::card().max_w(px(760.)).p_3().gap_1()
+            .text_color(rgb(INK)).flex().flex_col().items_center().p_3().gap_3()
+            .child(Self::card().max_w(px(760.)).flex_shrink_0().p_3().gap_1()
                 .child(scan_header)
                 .child(div().h(px(122.)).flex_shrink_0().w_full().rounded_md().border_1().border_color(rgb(0xd8e4ea))
-                    .bg(rgb(0xf7fafc)).p_2().overflow_y_scrollbar().child(candidates))
+                    .bg(rgb(0xf7fafc)).p_2().overflow_y_scrollbar().child(candidates)))
+            .child(Self::card().max_w(px(760.)).flex_shrink_0().p_3().gap_1()
                 .child(Self::label(t("Frame IP 地址", "Frame IP address")))
                 .child(Input::new(&self.ip).id("frame-ip").w_full().disabled(busy))
                 .child(div().flex().child(Self::help_link(Button::new("ip-help").label(t("如何查看 Frame IP", "Find your Frame's IP address")))
@@ -146,22 +158,18 @@ impl Render for FrameView {
                         .on_click(cx.listener(|_, _, _, cx| cx.open_url(t(frame::SSH_HELP, frame::SSH_HELP_EN)))))
                     .child(Button::new("probe").label(t("连接并设置", "Connect and set up")).primary().disabled(busy)
                         .on_click(cx.listener(|this, _, window, cx| { if !this.workflow.busy() && !this.workflow.demo { this.run_probe(window, cx); } })))));
-        let mut lines = div().flex().flex_col().gap_1();
-        if self.workflow.lines.is_empty() {
-            lines = lines.child(Self::muted(t("尚未执行头显设置。", "No headset settings have been applied yet.")));
-        }
-        for line in &self.workflow.lines {
-            lines = lines.child(div().text_sm().text_color(rgb(if line.contains("[ERROR]") { ERROR } else { INK })).child(line.clone()));
-        }
+        let lines = crate::gpui_log::text("headset-log-text", self.workflow.lines.iter()
+            .map(|line| (line.clone(), crate::ui_log::level(line) == crate::ui_log::Level::Error)));
         let mut page = div().size_full().relative().bg(rgb(0xf7fafc)).flex().flex_col()
             .child(body)
             .child(div().flex_1().min_h(px(0.)).px_3().pb_3().flex()
                 .child(Self::card().flex_1().min_h(px(0.))
-                    .child(Self::label(t("头显执行结果", "Headset setup results")).text_lg())
+                    .child(div().flex().items_center().justify_between()
+                        .child(Self::label(t("执行日志", "Execution log")).text_lg())
+                        .child(Button::new("export-headset-log").label(t("导出日志", "Export log")).ghost().small().text_color(rgb(MUTED))
+                            .on_click(cx.listener(|this, _, _, cx| { this.export_log(); cx.notify(); }))))
                     .when(!self.workflow.status_error && !workflow_status.is_empty(), |card| card.child(Self::muted(workflow_status)))
-                    .child(div().relative().flex_1().min_h(px(0.))
-                        .child(div().id("frame-results").size_full().pr_3().overflow_y_scroll().track_scroll(&self.result_scroll).child(lines))
-                        .child(div().absolute().inset_0().child(Scrollbar::vertical(&self.result_scroll).mode(ScrollbarMode::Always).viewport_from_layout())))));
+                    .child(crate::gpui_log::pane("frame-results", &self.result_scroll, lines))));
         if let Some((ip, user, fingerprint, new_host)) = preview {
             let confirmation = Self::card().w(px(670.)).p_6().gap_5()
                 .child(Self::label(t("信任此头显？", "Trust this headset?")).text_xl())
