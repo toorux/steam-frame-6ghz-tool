@@ -411,10 +411,11 @@ impl Drop for Credentials {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SetupResult { Success, NeedsRestart, Partial, Failed }
+pub enum SetupResult { AlreadySet, Success, NeedsRestart, Partial, Failed }
 impl SetupResult {
     pub fn message(self) -> &'static str {
         match self {
+            Self::AlreadySet => t("头显已设置为 US，无需重复设置。", "Your headset is already set to US. No changes were needed."),
             Self::Success => t("设置成功；请自行重启头显后复查。", "Setup complete. Restart your headset and check again."),
             Self::NeedsRestart => t("环境异常，本次设置不保证成功，请重启头显测试", "Unexpected configuration: setup cannot be guaranteed. Restart your headset and test it."),
             Self::Partial => t("设置部分完成，请查看日志中的已完成步骤和错误。", "Setup only partially completed. Check the log for changes and errors."),
@@ -568,6 +569,7 @@ fn apply_settings(run: &mut impl FnMut(&str) -> Result<String, String>, changed:
         let before = if exists == "present" { Some(run(GET_CONFIG)?) } else if exists == "absent" { None } else { return Err("Unexpected configuration probe response".into()); };
         let plan = config_plan(before.as_deref())?;
         *abnormal = plan.abnormal;
+        if !plan.changed && reg_is_us(&run("sudo -S -p '' sh -c 'iw reg get'")?) { return Ok(()); }
         // From this point a disconnect may leave a runtime change, even if no reply arrives.
         *changed = true;
         run("sudo -S -p '' sh -c 'iw reg set US'")?;
@@ -653,6 +655,7 @@ pub fn execute(ip: Ipv4Addr, expected: &str, credentials: Credentials, mut emit:
         apply_settings(&mut run, &mut changed, &mut abnormal)
     })();
     let status = match &result {
+        Ok(()) if !changed => SetupResult::AlreadySet,
         Ok(()) if abnormal => SetupResult::NeedsRestart,
         Ok(()) => SetupResult::Success,
         Err(_) if changed => SetupResult::Partial,
@@ -729,6 +732,7 @@ mod tests {
         for (before, abnormal_expected) in [(None, true), (Some(""), true), (Some(updated), false)] {
             let mut reads = 0;
             let mut writes = 0;
+            let mut runtime_sets = 0;
             let mut changed = false;
             let mut abnormal = false;
             apply_settings(&mut |code| {
@@ -738,12 +742,29 @@ mod tests {
                     return Ok(if reads == 1 { before.unwrap_or(updated) } else { updated }.into());
                 }
                 if code.contains("mv -f") { writes += 1; }
+                if code.contains("iw reg set US") { runtime_sets += 1; }
                 if code.contains("iw reg get") { return Ok("global\ncountry US:\nphy#0\ncountry US:".into()); }
                 Ok(String::new())
             }, &mut changed, &mut abnormal).unwrap();
             assert_eq!(abnormal, abnormal_expected);
             assert_eq!(writes, usize::from(before != Some(updated)));
+            assert_eq!(runtime_sets, usize::from(before != Some(updated)));
+            assert_eq!(changed, before != Some(updated));
         }
+        let mut runtime_sets = 0;
+        let mut changed = false;
+        let mut abnormal = false;
+        apply_settings(&mut |code| {
+            if code.contains("printf present") { return Ok("present".into()); }
+            if code == GET_CONFIG { return Ok(updated.into()); }
+            if code.contains("iw reg set US") { runtime_sets += 1; }
+            if code.contains("iw reg get") {
+                return Ok(if runtime_sets == 0 { "global\ncountry CN:\nphy#0\ncountry CN:" } else { "global\ncountry US:\nphy#0\ncountry US:" }.into());
+            }
+            Ok(String::new())
+        }, &mut changed, &mut abnormal).unwrap();
+        assert_eq!(runtime_sets, 1);
+        assert!(changed);
     }
     #[test]
     #[ignore = "Read-only check of local network and optional FRAME_TEST_IP SSH handshake"]

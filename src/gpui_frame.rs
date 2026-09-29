@@ -313,7 +313,7 @@ mod error_tests {
 
     #[test]
     fn every_final_result_opens_a_dialog_and_retains_logs() {
-        for result in [frame::SetupResult::Success, frame::SetupResult::NeedsRestart,
+        for result in [frame::SetupResult::AlreadySet, frame::SetupResult::Success, frame::SetupResult::NeedsRestart,
             frame::SetupResult::Partial, frame::SetupResult::Failed] {
             let mut ui = FrameUi::new(true);
             let (tx, rx) = mpsc::channel();

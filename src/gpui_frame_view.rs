@@ -190,6 +190,7 @@ impl Render for FrameView {
         }
         if let Some(error) = self.workflow.error_dialog.clone() {
             let (title, color) = match self.workflow.result {
+                Some(frame::SetupResult::AlreadySet) => (t("已经是 US", "Already set to US"), INK),
                 Some(frame::SetupResult::Success) => (t("设置成功", "Setup complete"), INK),
                 Some(frame::SetupResult::NeedsRestart) => (t("请重启头显测试", "Restart and test your headset"), 0x8a4b08),
                 Some(frame::SetupResult::Partial) => (t("设置部分完成", "Setup partially completed"), ERROR),
