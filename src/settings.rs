@@ -94,7 +94,7 @@ fn perform(action: Action, adapter: Option<&Adapter>) -> Result<Output, String> 
 
 // User paths/identifiers are environment data, never interpolated into PowerShell source.
 fn run(script: &str, env: &[(&str, String)]) -> Result<String, String> {
-    let script = format!("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); try {{ {script} }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}");
+    let script = format!("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); try {{ {script} }} catch {{ [Console]::Error.WriteLine($_.InvocationInfo.PositionMessage + ' ' + $_.Exception.Message); exit 1 }}");
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let mut child = Command::new(backend::system_dir()?.join("WindowsPowerShell/v1.0/powershell.exe"))
         .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", &base64::engine::general_purpose::STANDARD.encode(bytes)])
@@ -152,7 +152,6 @@ if ($env:SF_SHORTCUT_REMOVE -eq 'true') {
     $shortcut.TargetPath = $env:SF_EXE
     $shortcut.Arguments = ''
     $shortcut.WorkingDirectory = Split-Path -LiteralPath $env:SF_EXE
-    $shortcut.IconLocation = $env:SF_EXE + ',0'
     $shortcut.Description = $marker
     $shortcut.Save()
     $saved = $shell.CreateShortcut($path)
