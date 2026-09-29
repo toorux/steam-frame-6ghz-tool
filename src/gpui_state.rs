@@ -46,6 +46,9 @@ struct App {
     log_dir: Option<PathBuf>,
     update_receiver: Option<Receiver<Result<Option<updater::Release>, String>>>,
     available_update: Option<updater::Release>,
+    manual_update: bool,
+    update_status: String,
+    settings: crate::settings::Settings,
 }
 impl App {
     fn empty(demo: bool) -> Self {
@@ -81,6 +84,9 @@ impl App {
             log_dir: None,
             update_receiver: None,
             available_update: None,
+            manual_update: false,
+            update_status: String::new(),
+            settings: Default::default(),
         }
     }
     fn new(demo: bool) -> Self {
@@ -100,11 +106,7 @@ impl App {
         }
         app.refresh();
         if !demo {
-            let (tx, rx) = mpsc::channel();
-            app.update_receiver = Some(rx);
-            thread::spawn(move || {
-                let _ = tx.send(updater::check());
-            });
+            app.check_updates(false);
         }
         app
     }
@@ -219,20 +221,41 @@ impl App {
             let _ = tx.send(Event::AutoApply(service::reinstall(), service::state()));
         });
     }
+    fn check_updates(&mut self, manual: bool) {
+        if self.update_receiver.is_some() { return; }
+        self.manual_update = manual;
+        self.update_status = t("正在检查更新…", "Checking for updates…").into();
+        let (tx, rx) = mpsc::channel();
+        self.update_receiver = Some(rx);
+        let demo = self.demo;
+        thread::spawn(move || { let _ = tx.send(if demo { Ok(None) } else { updater::check() }); });
+    }
+    fn finish_update(&mut self, result: Result<Option<updater::Release>, String>) {
+        let notice = match result {
+            Ok(release) => {
+                self.update_status = release.as_ref().map(|r| format!("{} {}", t("发现新版本", "New version available:"), r.version))
+                    .unwrap_or_else(|| t("当前已是最新版本。", "You're up to date.").into());
+                self.available_update = release;
+                Ok(self.update_status.clone())
+            }
+            Err(error) => {
+                self.update_status = format!("{}\n{error}", t("检查更新失败，请稍后重试。", "Could not check for updates. Please try again later."));
+                Err(self.update_status.clone())
+            }
+        };
+        self.record(&format!("{}{}", if notice.is_err() { "[WARN] " } else { "" }, self.update_status));
+        if self.manual_update { self.settings.notice = Some(notice); }
+        self.manual_update = false;
+    }
     fn poll_update(&mut self) {
         match self.update_receiver.as_ref().map(|rx| rx.try_recv()) {
             Some(Ok(result)) => {
                 self.update_receiver = None;
-                match result {
-                    Ok(release) => {
-                        self.available_update = release;
-                    }
-                    Err(e) => self.record(&format!("[WARN] 检查更新失败，不影响本地功能：{e}")),
-                }
+                self.finish_update(result);
             }
             Some(Err(mpsc::TryRecvError::Disconnected)) => {
                 self.update_receiver = None;
-                self.record("[WARN] 检查更新线程意外结束，不影响本地功能。");
+                self.finish_update(Err(t("检查更新线程意外结束。", "The update check stopped unexpectedly.").into()));
             }
             _ => {}
         }
@@ -625,6 +648,23 @@ mod state_tests {
     use crate::{service, ui_log};
     use crate::ui_log::Filter;
     use std::sync::mpsc;
+
+    #[test]
+    fn manual_updates_report_latest_failure_and_new_release() {
+        let mut app = App::empty(true);
+        app.manual_update = true;
+        app.finish_update(Ok(None));
+        assert!(app.settings.notice.as_ref().unwrap().is_ok());
+        app.manual_update = true;
+        app.finish_update(Err("offline".into()));
+        assert!(app.settings.notice.as_ref().unwrap().is_err());
+        app.manual_update = true;
+        app.finish_update(Ok(Some(crate::updater::Release {
+            version: "9.0.0".parse().unwrap(), page: "https://github.com/toorux/steam-frame-6ghz-tool/releases/tag/v9.0.0".into(),
+        })));
+        assert!(app.settings.notice.as_ref().unwrap().is_ok());
+        assert_eq!(app.available_update.unwrap().version.to_string(), "9.0.0");
+    }
 
     #[test]
     fn one_adapter_is_selected_and_queried() {

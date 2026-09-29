@@ -9,6 +9,7 @@ mod i18n;
 mod logs;
 mod protocol;
 mod service;
+mod settings;
 mod ui_log;
 mod updater;
 
