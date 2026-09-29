@@ -211,7 +211,7 @@ mod tests {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir(&folder).unwrap();
         let exe = folder.join("测试 '[app].exe");
-        std::fs::write(&exe, []).unwrap();
+        std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
         let script = SHORTCUT.replace("[Environment]::GetFolderPath($env:SF_SHORTCUT_FOLDER)", "$env:SF_TEST_FOLDER");
         let mut env = vec![("SF_TEST_FOLDER", folder.to_string_lossy().into_owned()),
             ("SF_EXE", exe.to_string_lossy().into_owned()), ("SF_SHORTCUT_REMOVE", "false".into())];
