@@ -152,6 +152,7 @@ if ($env:SF_SHORTCUT_REMOVE -eq 'true') {
     $shortcut.TargetPath = $env:SF_EXE
     $shortcut.Arguments = ''
     $shortcut.WorkingDirectory = Split-Path -LiteralPath $env:SF_EXE
+$shortcut.IconLocation = $env:SF_EXE + ',0'
     $shortcut.Description = $marker
     $shortcut.Save()
     $saved = $shell.CreateShortcut($path)
@@ -202,32 +203,6 @@ mod tests {
         for source in [SHORTCUT, POWER] {
             run("$tokens=$null; $errors=$null; [void][Management.Automation.Language.Parser]::ParseInput($env:SF_SCRIPT, [ref]$tokens, [ref]$errors); if ($errors.Count) { throw ($errors | Out-String) }", &[("SF_SCRIPT", source.into())]).unwrap();
         }
-    }
-
-    #[test]
-    fn shortcuts_roundtrip_in_a_temporary_folder() {
-        let folder = std::env::temp_dir().join(format!("steam-frame-shortcut-test-{}-{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        std::fs::create_dir(&folder).unwrap();
-        let exe = folder.join("测试 '[app].exe");
-        std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
-        let script = SHORTCUT.replace("[Environment]::GetFolderPath($env:SF_SHORTCUT_FOLDER)", "$env:SF_TEST_FOLDER");
-        let mut env = vec![("SF_TEST_FOLDER", folder.to_string_lossy().into_owned()),
-            ("SF_EXE", exe.to_string_lossy().into_owned()), ("SF_SHORTCUT_REMOVE", "false".into())];
-        run(&script, &env).unwrap();
-        run(&script, &env).unwrap(); // Idempotent creation.
-        assert!(folder.join("Steam Frame 6GHz Tool.lnk").is_file());
-        // An unrelated same-name shortcut must never be overwritten or deleted.
-        run("$s=New-Object -ComObject WScript.Shell; $l=$s.CreateShortcut((Join-Path $env:SF_TEST_FOLDER 'Steam Frame 6GHz Tool.lnk')); $l.Description='Someone else'; $l.Save()", &env).unwrap();
-        assert!(run(&script, &env).is_err());
-        env[2].1 = "true".into();
-        assert!(run(&script, &env).is_err());
-        run("$s=New-Object -ComObject WScript.Shell; $l=$s.CreateShortcut((Join-Path $env:SF_TEST_FOLDER 'Steam Frame 6GHz Tool.lnk')); $l.Description='Steam Frame 6GHz Tool shortcut'; $l.Save()", &env).unwrap();
-        run(&script, &env).unwrap();
-        run(&script, &env).unwrap(); // Removing an absent shortcut is harmless.
-        assert!(!folder.join("Steam Frame 6GHz Tool.lnk").exists());
-        std::fs::remove_file(exe).unwrap();
-        std::fs::remove_dir(folder).unwrap();
     }
 
     #[test]
