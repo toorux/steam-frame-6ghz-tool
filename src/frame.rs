@@ -1,4 +1,4 @@
-//! Frame SSH operations. Only the fixed commands below may be sent to the headset.
+//! Frame SSH operations. Config data is parsed locally and never evaluated as shell code.
 use crate::i18n::{self, t};
 use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
 use serde::{Deserialize, Serialize};
@@ -38,14 +38,7 @@ pub const SSH_HELP_EN: &str =
 pub const REPO: &str = "https://github.com/toorux/steam-frame-6ghz-tool";
 pub const IP_HELP: &str = "https://github.com/toorux/steam-frame-6ghz-tool#如何查看-frame-ip";
 pub const IP_HELP_EN: &str = "https://github.com/toorux/steam-frame-6ghz-tool/blob/main/README.en.md#finding-the-frame-ip";
-const CONFIG: &str = "/etc/conf.d/wireless-regdom";
-pub const COMMANDS: &str = "sudo -S -p '' true  # 验证 sudo 权限\nsudo -S -p '' cat /etc/conf.d/wireless-regdom  # 预检，不写入\nsudo -S -p '' /usr/sbin/iw reg set US\n# 如果尚未启用 US，则执行：\nsudo -S -p '' sed -i 's/^#WIRELESS_REGDOM=\"US\"$/WIRELESS_REGDOM=\"US\"/' /etc/conf.d/wireless-regdom\nsudo -S -p '' cat /etc/conf.d/wireless-regdom  # 复查\ngrep -n '^WIRELESS_REGDOM=' /etc/conf.d/wireless-regdom\n/usr/sbin/iw reg get";
-pub const COMMANDS_EN: &str = "sudo -S -p '' true  # Check sudo access\nsudo -S -p '' cat /etc/conf.d/wireless-regdom  # Preflight; read only\nsudo -S -p '' /usr/sbin/iw reg set US\n# Only if US is not already enabled:\nsudo -S -p '' sed -i 's/^#WIRELESS_REGDOM=\"US\"$/WIRELESS_REGDOM=\"US\"/' /etc/conf.d/wireless-regdom\nsudo -S -p '' cat /etc/conf.d/wireless-regdom  # Verify\ngrep -n '^WIRELESS_REGDOM=' /etc/conf.d/wireless-regdom\n/usr/sbin/iw reg get";
-const SET_RUNTIME: &str = "sudo -S -p '' /usr/sbin/iw reg set US";
-const SET_CONFIG: &str = "sudo -S -p '' sed -i 's/^#WIRELESS_REGDOM=\"US\"$/WIRELESS_REGDOM=\"US\"/' /etc/conf.d/wireless-regdom";
 const GET_CONFIG: &str = "sudo -S -p '' cat /etc/conf.d/wireless-regdom";
-const GREP_CONFIG: &str = "grep -n '^WIRELESS_REGDOM=' /etc/conf.d/wireless-regdom";
-const GET_REG: &str = "/usr/sbin/iw reg get";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Network {
@@ -416,105 +409,187 @@ impl Drop for Credentials {
         self.sudo_password.zeroize();
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetupResult { Success, NeedsRestart, Partial, Failed }
+impl SetupResult {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Success => t("设置成功；请自行重启头显后复查。", "Setup complete. Restart your headset and check again."),
+            Self::NeedsRestart => t("环境异常，本次设置不保证成功，请重启头显测试", "Unexpected configuration: setup cannot be guaranteed. Restart your headset and test it."),
+            Self::Partial => t("设置部分完成，请查看日志中的已完成步骤和错误。", "Setup only partially completed. Check the log for changes and errors."),
+            Self::Failed => t("设置失败，请查看日志。", "Setup failed. Check the log for details."),
+        }
+    }
+}
 pub struct Outcome {
-    pub lines: Vec<String>,
-    pub success: bool,
-    pub sudo_auth_failed: bool,
+    pub result: SetupResult,
+    pub error: Option<String>,
+}
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 fn command(
-    session: &Session,
-    code: &str,
-    sudo_password: Option<&str>,
+    session: &Session, code: &str, sudo_password: Option<&str>,
+    log: &mut impl FnMut(String),
 ) -> Result<(i32, String), String> {
+    log(format!("$ {code}"));
     let mut channel = session.channel_session().map_err(|e| e.to_string())?;
-    channel.exec(code).map_err(|e| {
-        if i18n::is_english() {
-            format!("Could not start remote command: {e}")
-        } else {
-            format!("远端命令启动失败：{e}")
-        }
-    })?;
+    // Merge both streams before reading so neither SSH stream can block the other.
+    channel.handle_extended_data(ssh2::ExtendedData::Merge).map_err(|e| e.to_string())?;
+    channel.exec(code).map_err(|e| e.to_string())?;
     if let Some(password) = sudo_password {
         let mut secret = password.as_bytes().to_vec();
         secret.push(b'\n');
-        let write = channel.write_all(&secret);
+        let result = channel.write_all(&secret);
         secret.zeroize();
-        write.map_err(|e| e.to_string())?;
+        result.map_err(|e| e.to_string())?;
     }
     channel.send_eof().map_err(|e| e.to_string())?;
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    (&mut channel)
-        .take(32 * 1024)
-        .read_to_string(&mut stdout)
-        .map_err(|e| e.to_string())?;
-    channel
-        .stderr()
-        .take(8 * 1024)
-        .read_to_string(&mut stderr)
-        .map_err(|e| e.to_string())?;
+    let mut output = Vec::new();
+    let mut pending = Vec::new();
+    let mut buffer = [0u8; 2048];
+    let mut truncated = false;
+    let started = std::time::Instant::now();
+    loop {
+        if started.elapsed() > Duration::from_secs(60) { return Err(t("远端命令超时，结果可能不完整。", "Remote command timed out; its result may be incomplete.").into()); }
+        let count = channel.read(&mut buffer).map_err(|e| e.to_string())?;
+        if count == 0 { break; }
+        let keep = count.min((64 * 1024usize).saturating_sub(output.len()));
+        output.extend_from_slice(&buffer[..keep]);
+        pending.extend_from_slice(&buffer[..keep]);
+        while let Some(end) = pending.iter().position(|b| *b == b'\n') {
+            log(String::from_utf8_lossy(&pending[..end]).trim_end_matches('\r').to_owned());
+            pending.drain(..=end);
+        }
+        truncated |= keep < count;
+    }
+    if !pending.is_empty() { log(String::from_utf8_lossy(&pending).into_owned()); }
     channel.wait_close().map_err(|e| e.to_string())?;
     let status = channel.exit_status().map_err(|e| e.to_string())?;
-    if status != 0 {
-        return Ok((status, stderr.trim().to_string()));
-    }
-    Ok((status, stdout))
+    if truncated { log(t("[输出已截断]", "[Output truncated]").into()); }
+    log(format!("[exit {status}]"));
+    if truncated { return Err(t("输出过长，停止处理以避免使用不完整配置。", "Output exceeded the limit; stopped to avoid using incomplete configuration.").into()); }
+    Ok((status, String::from_utf8(output).map_err(|_| t("输出不是有效 UTF-8；未继续处理", "Output is not valid UTF-8; stopped"))?))
 }
-fn valid_config(content: &str) -> Result<bool, String> {
-    let active: Vec<_> = content
-        .lines()
-        .filter(|line| line.starts_with("WIRELESS_REGDOM="))
-        .collect();
-    if active.len() > 1
-        || active
-            .first()
-            .is_some_and(|line| *line != "WIRELESS_REGDOM=\"US\"")
-    {
-        return Err(t(
-            "配置中存在其他已启用的国家码；未修改",
-            "Another country code is enabled in the configuration; no changes made",
-        )
-        .into());
+#[derive(Debug)]
+struct ConfigPlan { content: String, changed: bool, abnormal: bool }
+fn config_plan(content: Option<&str>) -> Result<ConfigPlan, String> {
+    let original = content.unwrap_or("");
+    let mut active = None;
+    let mut commented_us = None;
+    let lines: Vec<_> = original.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        let text = line.trim();
+        if text.is_empty() { continue; }
+        if text.starts_with('#') {
+            if text.trim_start_matches('#').trim() == "WIRELESS_REGDOM=\"US\"" { commented_us = Some(index); }
+            continue;
+        }
+        let Some((key, value)) = text.split_once('=') else {
+            return Err(t("配置无法安全解析；未修改。", "Configuration cannot be safely parsed; unchanged.").into());
+        };
+        if key.trim() != "WIRELESS_REGDOM" {
+            return Err(t("配置包含未知设置；未修改。", "Configuration contains unsupported settings; unchanged.").into());
+        }
+        let value = value.trim();
+        let value = if value.len() >= 2 && (value.starts_with('"') && value.ends_with('"') || value.starts_with('\'') && value.ends_with('\'')) {
+            &value[1..value.len()-1]
+        } else { value };
+        if value.len() != 2 || !value.bytes().all(|b| b.is_ascii_uppercase()) || active.is_some() {
+            return Err(t("国家码配置无效或存在多条冲突；未修改。", "Invalid or conflicting country-code entries; unchanged.").into());
+        }
+        active = Some((index, value));
     }
-    if active.is_empty()
-        && !content
-            .lines()
-            .any(|line| line == "#WIRELESS_REGDOM=\"US\"")
-    {
-        return Err(t(
-            "配置中没有 README 预期的 US 行；未修改",
-            "The expected US line is missing from the configuration; no changes made",
-        )
-        .into());
+    if active.is_some_and(|(_, value)| value == "US") {
+        return Ok(ConfigPlan { content: original.into(), changed: false, abnormal: false });
     }
-    Ok(!active.is_empty())
+    let replace = active.map(|(index, _)| index).or(commented_us);
+    let mut updated = String::new();
+    for (index, line) in original.split_inclusive('\n').enumerate() {
+        if replace == Some(index) { updated.push_str("WIRELESS_REGDOM=\"US\"\n"); }
+        else { updated.push_str(line); }
+    }
+    if replace.is_none() {
+        if !updated.is_empty() && !updated.ends_with('\n') { updated.push('\n'); }
+        updated.push_str("WIRELESS_REGDOM=\"US\"\n");
+    }
+    Ok(ConfigPlan { content: updated, changed: true, abnormal: original.trim().is_empty() })
+}
+const PREFLIGHT: &str = r#"set -eu
+command -v iw
+command -v base64
+command -v mktemp
+test ! -L /etc/conf.d
+if test -e /etc/conf.d; then test -d /etc/conf.d; test -w /etc/conf.d; else test -w /etc; fi
+test ! -L /etc/conf.d/wireless-regdom
+if test -e /etc/conf.d/wireless-regdom; then
+  test -f /etc/conf.d/wireless-regdom
+  test -r /etc/conf.d/wireless-regdom
+  test -w /etc/conf.d/wireless-regdom
+fi"#;
+fn write_script(before: Option<&str>, after: &str) -> String {
+    let guard = if let Some(before) = before {
+        let encoded = STANDARD_NO_PAD.encode(before);
+        format!("test -f \"$p\"\ntest \"$(base64 < \"$p\" | tr -d '\\n=')\" = {}\nb=$(mktemp \"$p.backup.XXXXXX\")\ncp -p -- \"$p\" \"$b\"\nprintf 'Backup: %s\\n' \"$b\"", shell_quote(&encoded))
+    } else {
+        "test ! -e \"$p\"\nprintf 'Original file was absent\\n'".into()
+    };
+    format!(r#"set -eu
+p=/etc/conf.d/wireless-regdom
+test ! -L /etc/conf.d
+test ! -L "$p"
+{guard}
+mkdir -p /etc/conf.d
+tmp=$(mktemp /etc/conf.d/.wireless-regdom.XXXXXX)
+trap 'rm -f -- "$tmp"' EXIT
+if test -e "$p"; then cp -p -- "$p" "$tmp"; else chmod 644 "$tmp"; fi
+printf %s {after} > "$tmp"
+mv -f -- "$tmp" "$p"
+trap - EXIT"#, after=shell_quote(after))
 }
 fn reg_is_us(output: &str) -> bool {
     let mut section = "";
     let mut global = false;
     let mut phy0 = false;
     for line in output.lines() {
-        if line == "global" || line.starts_with("phy#") {
-            section = line;
-        }
+        if line == "global" || line.starts_with("phy#") { section = line; }
         if line.trim_start().starts_with("country US:") {
-            if section == "global" {
-                global = true;
-            }
-            if section.starts_with("phy#0") {
-                phy0 = true;
-            }
+            if section == "global" { global = true; }
+            if section.starts_with("phy#0") { phy0 = true; }
         }
     }
     global && phy0
 }
-pub fn execute(ip: Ipv4Addr, expected: &str, credentials: Credentials) -> Outcome {
-    let mut lines = vec![if i18n::is_english() {
-        format!("Connecting to {ip}; checking host key")
-    } else {
-        format!("连接 {ip}，核对主机密钥")
-    }];
-    let mut sudo_auth_failed = false;
+fn apply_settings(run: &mut impl FnMut(&str) -> Result<String, String>, changed: &mut bool, abnormal: &mut bool) -> Result<(), String> {
+        run("sudo -S -p '' true")?;
+        run(&format!("sudo -S -p '' sh -c {}", shell_quote(PREFLIGHT)))?;
+        let exists = run("sudo -S -p '' sh -c 'if test -e /etc/conf.d/wireless-regdom; then printf present; else printf absent; fi'")?;
+        let before = if exists == "present" { Some(run(GET_CONFIG)?) } else if exists == "absent" { None } else { return Err("Unexpected configuration probe response".into()); };
+        let plan = config_plan(before.as_deref())?;
+        *abnormal = plan.abnormal;
+        // From this point a disconnect may leave a runtime change, even if no reply arrives.
+        *changed = true;
+        run("sudo -S -p '' sh -c 'iw reg set US'")?;
+        if plan.changed {
+            run(&format!("sudo -S -p '' sh -c {}", shell_quote(&write_script(before.as_deref(), &plan.content))))?;
+        }
+        let after = run(GET_CONFIG)?;
+        if after != plan.content { return Err(t("配置写入复查失败", "Configuration read-back did not match").into()); }
+        let state = run("sudo -S -p '' sh -c 'iw reg get'")?;
+        if !reg_is_us(&state) { return Err(t("配置已写入，但未确认全局及 phy#0 都为 US", "Configuration saved, but global and phy#0 regions were not both confirmed as US").into()); }
+        Ok(())
+}
+pub fn execute(ip: Ipv4Addr, expected: &str, credentials: Credentials, mut emit: impl FnMut(String)) -> Outcome {
+    // Redact complete lines, including secrets split across SSH read chunks.
+    let mut log = |mut line: String| {
+        for secret in [&credentials.password, &credentials.sudo_password] {
+            if !secret.is_empty() { line = line.replace(secret, "[REDACTED]"); }
+        }
+        emit(line);
+    };
+    let mut changed = false;
+    let mut abnormal = false;
     let result = (|| -> Result<(), String> {
         let (session, fingerprint) = connect(ip)?;
         if fingerprint != expected {
@@ -567,105 +642,26 @@ pub fn execute(ip: Ipv4Addr, expected: &str, credentials: Credentials) -> Outcom
         if !session.authenticated() {
             return Err(t("SSH 验证未完成", "SSH authentication did not complete").into());
         }
-        lines.push(t("SSH 登录成功", "SSH login succeeded").into());
-        let sudo = if credentials.sudo_password.is_empty() {
-            &credentials.password
-        } else {
-            &credentials.sudo_password
-        };
-        let (code, _) = command(&session, "sudo -S -p '' true", Some(sudo))?;
-        if code != 0 {
-            sudo_auth_failed = true;
-            return Err(t(
-                "sudo 密码或权限验证失败；尚未修改头显",
-                "sudo password or permission check failed; headset unchanged",
-            )
-            .into());
-        }
-        let (code, config) = command(&session, GET_CONFIG, Some(sudo))?;
-        if code != 0 {
-            return Err(if i18n::is_english() {
-                format!("Could not read {CONFIG}; headset unchanged")
-            } else {
-                format!("无法读取 {CONFIG}；尚未修改头显")
-            });
-        }
-        let enabled = valid_config(&config)?;
-        lines.push(
-            t(
-                "永久配置预检通过",
-                "Persistent configuration preflight passed",
-            )
-            .into(),
-        );
-        let (code, _) = command(&session, SET_RUNTIME, Some(sudo))?;
-        if code != 0 {
-            return Err(t(
-                "临时设置 US 失败；永久配置未修改",
-                "Runtime US setting failed; persistent configuration unchanged",
-            )
-            .into());
-        }
-        lines.push(t("已执行临时设置 US", "Runtime US setting applied").into());
-        if !enabled {
-            let (code, _) = command(&session, SET_CONFIG, Some(sudo))?;
-            if code != 0 {
-                return Err(t(
-                    "临时设置已完成，但永久配置修改失败",
-                    "Runtime setting applied, but persistent configuration update failed",
-                )
-                .into());
-            }
-            lines.push(t("已启用永久配置 US", "Persistent US setting enabled").into());
-        } else {
-            lines.push(
-                t(
-                    "永久配置已是 US，未重复修改",
-                    "Persistent configuration is already US; file unchanged",
-                )
-                .into(),
-            );
-        }
-        let (code, after) = command(&session, GET_CONFIG, Some(sudo))?;
-        if code != 0 || valid_config(&after) != Ok(true) {
-            return Err(t(
-                "临时设置已完成，但永久配置复查失败",
-                "Runtime setting applied, but persistent configuration verification failed",
-            )
-            .into());
-        }
-        let (code, active) = command(&session, GREP_CONFIG, None)?;
-        if code != 0
-            || active.lines().count() != 1
-            || !active
-                .lines()
-                .next()
-                .is_some_and(|line| line.ends_with(":WIRELESS_REGDOM=\"US\""))
-        {
-            return Err(t(
-                "永久配置不是唯一一条已启用的 US 设置",
-                "Persistent US setting is not the only enabled region entry",
-            )
-            .into());
-        }
-        let (code, state) = command(&session, GET_REG, None)?;
-        if code != 0 || !reg_is_us(&state) {
-            return Err(t("永久配置已启用，但运行时未确认全局及 phy#0 都是 US", "Persistent US enabled, but runtime global and phy#0 regions were not both confirmed as US").into());
-        }
-        lines.push(t("复查通过：全局和 phy#0 为 US，永久配置已启用；请稍后自行重启头显再复查", "Verification passed: global and phy#0 are US, persistent setting enabled. Restart the headset yourself and verify again.").into());
-        Ok(())
-    })();
-    let success = result.is_ok();
-    if let Err(e) = result {
-        lines.push(format!("[ERROR] {e}"));
-    }
-    Outcome {
-        success,
-        sudo_auth_failed,
-        lines,
-    }
-}
 
+        log(t("SSH 登录成功；检查环境…", "SSH login succeeded; checking environment…").into());
+        let sudo = if credentials.sudo_password.is_empty() { &credentials.password } else { &credentials.sudo_password };
+        let mut run = |code: &str| -> Result<String, String> {
+            let (status, output) = command(&session, code, Some(sudo), &mut log)?;
+            if status != 0 { return Err(format!("{} (exit {status})", t("远端命令失败，请查看日志", "Remote command failed; see log"))); }
+            Ok(output)
+        };
+        apply_settings(&mut run, &mut changed, &mut abnormal)
+    })();
+    let status = match &result {
+        Ok(()) if abnormal => SetupResult::NeedsRestart,
+        Ok(()) => SetupResult::Success,
+        Err(_) if changed => SetupResult::Partial,
+        Err(_) => SetupResult::Failed,
+    };
+    if let Err(error) = &result { log(format!("[ERROR] {error}")); }
+    log(status.message().into());
+    Outcome { result: status, error: result.err() }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -678,28 +674,76 @@ mod tests {
         assert!(is_frame_name("frame.local"));
         assert!(is_frame_name("FRAME"));
         assert!(!is_frame_name("frame-other.local"));
-        assert_eq!(valid_config("#WIRELESS_REGDOM=\"US\"\n"), Ok(false));
-        assert_eq!(valid_config("WIRELESS_REGDOM=\"US\"\n"), Ok(true));
-        assert!(valid_config("WIRELESS_REGDOM=\"CN\"\n#WIRELESS_REGDOM=\"US\"\n").is_err());
+        assert!(!config_plan(Some("WIRELESS_REGDOM=\"US\"\n")).unwrap().changed);
         assert!(reg_is_us(
             "global\ncountry US: DFS-FCC\nphy#0 (self-managed)\ncountry US: DFS-FCC"
         ));
         assert!(!reg_is_us(
             "global\ncountry US: DFS-FCC\nphy#0 (self-managed)\ncountry CN: DFS-UNKNOWN"
         ));
-        assert!(!COMMANDS.contains("password"));
     }
     #[test]
-    fn translated_preview_keeps_the_same_commands() {
-        let commands = |preview: &str| {
-            preview
-                .lines()
-                .map(|line| line.split("  #").next().unwrap().trim())
-                .filter(|line| !line.is_empty() && !line.starts_with('#'))
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(commands(COMMANDS), commands(COMMANDS_EN));
+    fn config_plans_preserve_comments_and_reject_ambiguity() {
+        for value in [None, Some(""), Some(" \n")] {
+            let plan = config_plan(value).unwrap();
+            assert!(plan.abnormal && plan.changed);
+            assert!(plan.content.contains("WIRELESS_REGDOM=\"US\""));
+        }
+        for text in ["WIRELESS_REGDOM='CN'\n", "#WIRELESS_REGDOM=\"US\"\n", "# comments\n"] {
+            let plan = config_plan(Some(text)).unwrap();
+            assert!(plan.changed && !plan.abnormal);
+            assert!(!config_plan(Some(&plan.content)).unwrap().changed);
+        }
+        for text in ["WIRELESS_REGDOM=\"US\"\nWIRELESS_REGDOM=\"CN\"", "echo bad", "WIRELESS_REGDOM=$(id)"] {
+            assert!(config_plan(Some(text)).is_err());
+        }
+        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+        let script = write_script(Some("# old\n"), "WIRELESS_REGDOM=\"US\"\n");
+        assert!(script.find("cp -p").unwrap() < script.find("mv -f").unwrap());
+        assert!(script.contains("set -eu"));
+        assert!(write_script(None, "x").contains("Original file was absent"));
+    }
+
+    #[test]
+    fn setup_failures_stop_and_classify_changes() {
+        let original = "WIRELESS_REGDOM=\"CN\"\n";
+        let updated = "WIRELESS_REGDOM=\"US\"\n";
+        // sudo, environment, existence, read, runtime, write/backup, readback, regulatory state
+        for fail in 0..8 {
+            let mut step = 0;
+            let mut changed = false;
+            let mut abnormal = false;
+            let result = apply_settings(&mut |_| {
+                let current = step;
+                step += 1;
+                if current == fail { return Err("injected failure".into()); }
+                Ok(match current {
+                    2 => "present", 3 => original, 6 => updated,
+                    7 => "global\ncountry US:\nphy#0\ncountry US:", _ => "",
+                }.into())
+            }, &mut changed, &mut abnormal);
+            assert!(result.is_err());
+            assert_eq!(step, fail + 1);
+            assert_eq!(changed, fail >= 4);
+        }
+        for (before, abnormal_expected) in [(None, true), (Some(""), true), (Some(updated), false)] {
+            let mut reads = 0;
+            let mut writes = 0;
+            let mut changed = false;
+            let mut abnormal = false;
+            apply_settings(&mut |code| {
+                if code.contains("printf present") { return Ok(if before.is_some() { "present" } else { "absent" }.into()); }
+                if code == GET_CONFIG {
+                    reads += 1;
+                    return Ok(if reads == 1 { before.unwrap_or(updated) } else { updated }.into());
+                }
+                if code.contains("mv -f") { writes += 1; }
+                if code.contains("iw reg get") { return Ok("global\ncountry US:\nphy#0\ncountry US:".into()); }
+                Ok(String::new())
+            }, &mut changed, &mut abnormal).unwrap();
+            assert_eq!(abnormal, abnormal_expected);
+            assert_eq!(writes, usize::from(before != Some(updated)));
+        }
     }
     #[test]
     #[ignore = "Read-only check of local network and optional FRAME_TEST_IP SSH handshake"]

@@ -14,6 +14,7 @@ fn share_logs(lines: Vec<String>) {
 
 enum Event {
     Probe(Ipv4Addr, String, Result<Probe, String>),
+    Log(String),
     Execute(Outcome),
 }
 pub struct FrameUi {
@@ -33,6 +34,7 @@ pub struct FrameUi {
     lines: Vec<String>,
     exported: Vec<String>,
     demo: bool,
+    result: Option<frame::SetupResult>,
 }
 impl Drop for FrameUi {
     fn drop(&mut self) {
@@ -61,6 +63,7 @@ impl FrameUi {
             lines: vec![],
             exported: vec![],
             demo,
+            result: None,
         };
         if demo {
             this.status = t(
@@ -128,12 +131,11 @@ impl FrameUi {
             if i18n::is_english() { format!("This network has {count} addresses. Scanning may take a while.") }
             else { format!("当前网段包含 {count} 个地址，扫描可能较慢。请选择是否继续。") }
         } else if self.preview.is_some() {
-            t("请核对主机密钥和命令后确认。", "Review the host key and commands before continuing.").into()
+            t("请核对并信任主机指纹。", "Verify and trust the host fingerprint.").into()
         } else if self.receiver.is_some() {
             t("正在连接或执行，请稍候…", "Connecting or applying settings…").into()
-        } else if !self.lines.is_empty() {
-            if self.status_error { t("操作未完成，请查看下方步骤。", "Setup did not finish. Review the steps below.") }
-            else { t("头显设置完成；请稍后自行重启并复查。", "Headset setup complete. Restart it yourself and verify the result.") }.into()
+        } else if let Some(result) = self.result {
+            result.message().into()
         } else { String::new() };
     }
     fn poll(&mut self) {
@@ -161,7 +163,7 @@ impl FrameUi {
                 self.scan = None;
             }
         }
-        match self.receiver.as_ref().map(|rx| rx.try_recv()) {
+        loop { match self.receiver.as_ref().map(|rx| rx.try_recv()) {
             Some(Ok(Event::Probe(ip, username, result))) => {
                 self.receiver = None;
                 match result {
@@ -172,10 +174,11 @@ impl FrameUi {
                         self.preview = Some((ip, username, probe));
                         self.status_error = false;
                         self.status = t(
-                            "请核对主机密钥和命令后确认。",
-                            "Check the host key and commands before confirming.",
+                            "请核对并信任主机指纹。",
+                            "Verify and trust the host fingerprint.",
                         )
                         .into();
+                        if self.trust_new { self.execute(); }
                     }
                     Ok(_) => self.error(
                         t(
@@ -187,31 +190,20 @@ impl FrameUi {
                     Err(e) => self.error(e),
                 }
             }
-            Some(Ok(Event::Execute(result))) => {
+            Some(Ok(Event::Log(line))) => {
+                self.exported.push(line.clone());
+                self.lines.push(line);
+            }
+            Some(Ok(Event::Execute(outcome))) => {
                 self.receiver = None;
-                self.status = if result.success {
-                    t(
-                        "头显设置完成；请稍后自行重启并复查。",
-                        "Headset setup complete. Restart it yourself and verify again.",
-                    )
-                    .into()
-                } else if result.sudo_auth_failed {
-                    t("sudo 验证失败；请确认 SSH 密码也可用于 sudo。", "sudo authentication failed. Make sure your SSH password also works for sudo.").into()
-                } else {
-                    t(
-                        "操作未完成，请查看下方步骤。",
-                        "Operation incomplete. Review the steps below.",
-                    )
-                    .into()
-                };
-                self.status_error = !result.success;
-                for line in result.lines {
-                    self.exported.push(line.clone());
-                    self.lines.push(line);
-                }
-                if !result.success {
-                    self.error(self.status.clone());
-                }
+                self.password.zeroize();
+                self.result = Some(outcome.result);
+                self.status = outcome.result.message().into();
+                self.status_error = outcome.error.is_some();
+                self.error_dialog = Some(match outcome.error {
+                    Some(error) => format!("{}\n{error}", self.status),
+                    None => self.status.clone(),
+                });
             }
             Some(Err(mpsc::TryRecvError::Disconnected)) => {
                 self.receiver = None;
@@ -223,11 +215,13 @@ impl FrameUi {
                     .into(),
                 );
             }
-            _ => {}
-        }
+            _ => break,
+        } }
     }
     fn error(&mut self, error: String) {
         self.preview = None;
+        self.password.zeroize();
+        self.result = Some(frame::SetupResult::Failed);
         self.error_dialog = Some(error.clone());
         self.status = if i18n::is_english() {
             "Headset operation failed. See the diagnostic log below.".into()
@@ -239,6 +233,9 @@ impl FrameUi {
         self.exported.push(format!("[ERROR] {error}"));
     }
     fn probe(&mut self) {
+        if self.busy() { return; }
+        self.result = None;
+        self.error_dialog = None;
         let Ok(ip) = self.ip.trim().parse::<Ipv4Addr>() else {
             self.error(t("请输入有效的 IPv4 地址。", "Enter a valid IPv4 address.").into());
             return;
@@ -298,6 +295,7 @@ impl FrameUi {
                 ip,
                 &preview.fingerprint,
                 credentials,
+                |line| { let _ = tx.send(Event::Log(line)); },
             )));
         });
     }
@@ -305,13 +303,56 @@ impl FrameUi {
         std::mem::take(&mut self.exported)
     }
     pub fn busy(&self) -> bool {
-        self.receiver.is_some()
+        self.receiver.is_some() || self.preview.is_some()
     }
 }
 
 #[cfg(test)]
 mod error_tests {
-    use super::{Event, FrameUi, Outcome, mpsc};
+    use super::{Event, FrameUi, Outcome, mpsc, frame};
+
+    #[test]
+    fn every_final_result_opens_a_dialog_and_retains_logs() {
+        for result in [frame::SetupResult::Success, frame::SetupResult::NeedsRestart,
+            frame::SetupResult::Partial, frame::SetupResult::Failed] {
+            let mut ui = FrameUi::new(true);
+            let (tx, rx) = mpsc::channel();
+            ui.receiver = Some(rx);
+            tx.send(Event::Log("execution details".into())).unwrap();
+            let failed = matches!(result, frame::SetupResult::Partial | frame::SetupResult::Failed);
+            tx.send(Event::Execute(Outcome {
+                result, error: failed.then(|| "failure details".into()),
+            })).unwrap();
+            ui.poll();
+            assert!(ui.error_dialog.as_ref().unwrap().contains(result.message()));
+            assert_eq!(ui.status_error, failed);
+            assert!(ui.lines.iter().any(|line| line == "execution details"));
+            assert!(!ui.busy());
+            ui.error_dialog = None;
+            ui.poll();
+            assert!(ui.error_dialog.is_none());
+        }
+    }
+
+    #[test]
+    fn first_connection_waits_for_trust_and_blocks_repeat_clicks() {
+        let mut ui = FrameUi::new(true);
+        ui.ip = "192.0.2.1".into();
+        ui.password = "secret".into();
+        let (tx, rx) = mpsc::channel();
+        ui.receiver = Some(rx);
+        tx.send(Event::Probe(ui.ip.parse().unwrap(), "steamos".into(), Ok(frame::Probe {
+            fingerprint: "SHA256:test".into(), new_host: true,
+        }))).unwrap();
+        ui.poll();
+        assert!(ui.preview.is_some() && ui.busy());
+        assert!(!ui.trust_new);
+        ui.probe();
+        assert!(ui.receiver.is_none());
+        assert_eq!(ui.password, "secret");
+        ui.error("changed fingerprint".into());
+        assert!(ui.password.is_empty() && ui.preview.is_none());
+    }
 
     #[test]
     fn validation_and_partial_failure_show_dialog_and_keep_logs() {
@@ -324,10 +365,11 @@ mod error_tests {
 
         let (tx, rx) = mpsc::channel();
         ui.receiver = Some(rx);
+        tx.send(Event::Log("Runtime setting applied".into())).unwrap();
+        tx.send(Event::Log("[ERROR] Config write failed".into())).unwrap();
         tx.send(Event::Execute(Outcome {
-            success: false,
-            sudo_auth_failed: false,
-            lines: vec!["Runtime setting applied".into(), "[ERROR] Config write failed".into()],
+            result: frame::SetupResult::Partial,
+            error: Some("Config write failed".into()),
         })).unwrap();
         ui.poll();
         assert!(ui.error_dialog.is_some());
