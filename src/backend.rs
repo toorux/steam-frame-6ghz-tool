@@ -38,7 +38,7 @@ pub fn windows_dir() -> PathBuf {
     let n = unsafe { GetWindowsDirectoryW(b.as_mut_ptr(), b.len() as u32) } as usize;
     PathBuf::from(String::from_utf16_lossy(&b[..n.min(b.len())]))
 }
-fn system_dir() -> Result<PathBuf> {
+pub(crate) fn system_dir() -> Result<PathBuf> {
     let mut b = [0u16; 32768];
     let n = unsafe { GetSystemDirectoryW(b.as_mut_ptr(), b.len() as u32) } as usize;
     if n == 0 || n >= b.len() {

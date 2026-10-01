@@ -1,15 +1,19 @@
 [package]
 name = "steam-frame-6ghz-tool"
-version = "0.2.1"
+autobins = false
+version = "0.4.0-preview.3"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.98"
 description = "Steam Frame 6 GHz 设置工具"
 license = "MIT"
 
+[[bin]]
+name = "steam-frame-6ghz-tool"
+path = "src/gpui_entry.rs"
+
 [dependencies]
 base64 = "0.23"
-eframe = { version = "=0.33.3", default-features = false, features = ["default_fonts", "glow", "accesskit"] }
-image = { version = "=0.25.10", default-features = false, features = ["png"] }
+gpui-kit = "=0.6.6"
 rfd = "=0.16.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -18,11 +22,16 @@ semver = "1"
 ssh2 = "0.9.6"
 ureq = { version = "3.4", features = ["json", "win-system-proxy"] }
 zeroize = "1"
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_WiFi", "Win32_NetworkManagement_Ndis", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_LibraryLoader", "Win32_System_Services", "Win32_System_Com", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_UI_Shell"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_WiFi", "Win32_NetworkManagement_Ndis", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_Time", "Win32_System_LibraryLoader", "Win32_System_Services", "Win32_System_Com", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 winres = "0.1.12"
 
+[dev-dependencies]
+gpui-kit = { version = "=0.6.6", features = ["test-support"] }
+
 [profile.release]
 strip = true
-lto = "thin"
+lto = "fat"
+opt-level = "z"
+codegen-units = 1
