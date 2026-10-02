@@ -31,6 +31,7 @@ impl Dashboard {
                 view.data.poll_service();
                 view.data.poll_update();
                 if let Some(line) = view.data.settings.poll() { view.data.record(&line); }
+                if let Some(line) = view.data.settings.poll_multilink() { view.data.record(&line); }
                 for line in crate::gpui_frame::take_shared_logs() { view.data.record(&line); }
                 if let Some(error) = view.data.error_popup.take() {
                     view.data.status = error;
@@ -98,6 +99,7 @@ impl Dashboard {
     fn settings_page(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         use crate::settings::Action;
         let busy = self.data.settings.busy();
+        let multilink_busy = self.data.settings.multilink_busy();
         let adapter = self.data.selected.and_then(|i| self.data.adapters.get(i));
         let power = adapter.and_then(|a| self.data.settings.power.as_ref().filter(|(id, _)| *id == a.id)).map(|(_, enabled)| *enabled);
         let power_label = if busy { t("正在处理…", "Working…") } else { match power {
@@ -177,6 +179,24 @@ impl Dashboard {
                                 this.modal = Some(MainModal::DisablePower); cx.notify();
                             })))))
                 .when_some(self.data.settings.power_error.as_ref(), |card, error| card.child(Self::muted(error.clone()).text_color(rgb(ERROR)))))
+            .child(Self::card().flex_shrink_0()
+                .child(Self::label(t("多链路串流", "Multi-link streaming")).text_lg())
+                .child(Self::muted(t("允许 SteamVR 同时使用 Frame USB 适配器和普通 Wi-Fi。请先关闭 SteamVR；修改前会备份配置，重新启动 SteamVR 后生效。", "Allows SteamVR to stream over both the Frame USB adapter and regular Wi-Fi. Close SteamVR before changing it; the previous config is backed up. Restart SteamVR to apply.")))
+                .child(div().flex().items_center().justify_between().gap_2()
+                    .child(Self::label(if multilink_busy { t("正在读取或设置…", "Working…") } else { match self.data.settings.multilink {
+                        Some(true) => t("已保存：开启", "Saved: On"), Some(false) => t("已保存：关闭", "Saved: Off"), None => t("状态未读取或不可用", "Status unavailable"),
+                    }}))
+                    .child(div().flex().gap_2()
+                        .child(Button::new("refresh-multilink").label(t("刷新状态", "Refresh status")).disabled(multilink_busy)
+                            .on_click(cx.listener(|this, _, _, cx| { this.data.settings.start_multilink(None, this.data.demo); cx.notify(); })))
+                        .child(Button::new("toggle-multilink").label(if self.data.settings.multilink == Some(true) { t("关闭", "Turn off") } else { t("开启", "Turn on") })
+                            .primary().disabled(multilink_busy || self.data.settings.multilink.is_none())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(enabled) = this.data.settings.multilink {
+                                    this.data.settings.start_multilink(Some(!enabled), this.data.demo); cx.notify();
+                                }
+                            }))))
+                .when_some(self.data.settings.multilink_error.as_ref(), |card, error| card.child(Self::muted(error.clone()).text_color(rgb(ERROR))))))
     }
     fn log_panel(&self, cx: &mut Context<Self>) -> Div {
         let mut log_rows = Vec::new();
@@ -312,6 +332,7 @@ impl Render for Dashboard {
                         this.page = Page::Settings;
                         let adapter = this.data.selected.and_then(|i| this.data.adapters.get(i)).cloned();
                         this.data.settings.start(crate::settings::Action::ReadPower, adapter, this.data.demo);
+                        this.data.settings.start_multilink(None, this.data.demo);
                         cx.notify();
                     }))))
             .child(div().h_full().px_2().flex().items_center()
