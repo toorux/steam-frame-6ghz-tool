@@ -1,0 +1,14 @@
+# Managed by Steam Frame 6 GHz Tool. Do not edit in place.
+[Unit]
+Description=Steam Frame regulatory state watcher
+After=systemd-udev-trigger.service
+ConditionPathExists=/usr/bin/iw
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bash /var/lib/steam-frame-6ghz-tool/regdom-watch.sh
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

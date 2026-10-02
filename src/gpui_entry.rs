@@ -78,6 +78,7 @@ fn request_administrator() -> Result<(), String> {
 }
 
 fn main() {
+    i18n::initialize();
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--service"] {
         if service::dispatch().is_err() { std::process::exit(1); }

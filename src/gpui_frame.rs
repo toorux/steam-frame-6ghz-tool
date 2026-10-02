@@ -1,6 +1,6 @@
 use crate::frame::{self, Candidate, Credentials, Network, Outcome, Probe, Scan};
 use crate::i18n::{self, t};
-use std::{net::Ipv4Addr, sync::atomic::Ordering, sync::mpsc::{self, Receiver}, thread};
+use std::{net::Ipv4Addr, path::PathBuf, sync::atomic::Ordering, sync::mpsc::{self, Receiver}, thread};
 use zeroize::Zeroize;
 use std::sync::{Mutex, OnceLock};
 
@@ -16,6 +16,7 @@ enum Event {
     Probe(Ipv4Addr, String, Result<Probe, String>),
     Log(String),
     Execute(Outcome),
+    ServiceLog(Result<PathBuf, String>),
 }
 pub struct FrameUi {
     scan: Option<Scan>,
@@ -31,6 +32,7 @@ pub struct FrameUi {
     status: String,
     status_error: bool,
     error_dialog: Option<String>,
+    service_export_dialog: Option<String>,
     lines: Vec<String>,
     exported: Vec<String>,
     demo: bool,
@@ -60,6 +62,7 @@ impl FrameUi {
             status: String::new(),
             status_error: false,
             error_dialog: None,
+            service_export_dialog: None,
             lines: vec![],
             exported: vec![],
             demo,
@@ -205,6 +208,19 @@ impl FrameUi {
                     None => self.status.clone(),
                 });
             }
+            Some(Ok(Event::ServiceLog(result))) => {
+                self.receiver = None;
+                self.password.zeroize();
+                let message = match result {
+                    Ok(path) => format!("{} {}", t("头显服务日志已导出至", "Headset service log saved to"), path.display()),
+                    Err(error) => {
+                        let message = format!("{}: {error}", t("导出头显服务日志失败", "Could not export headset service log"));
+                        self.service_export_error(message.clone());
+                        message
+                    }
+                };
+                self.service_export_dialog = Some(message);
+            }
             Some(Err(mpsc::TryRecvError::Disconnected)) => {
                 self.receiver = None;
                 self.error(
@@ -299,6 +315,38 @@ impl FrameUi {
             )));
         });
     }
+    fn export_service_log(&mut self, path: PathBuf) {
+        if self.busy() { return; }
+        let Ok(ip) = self.ip.trim().parse::<Ipv4Addr>() else {
+            self.service_export_error(t("请输入有效的 IPv4 地址。", "Enter a valid IPv4 address.").into());
+            self.password.zeroize();
+            return;
+        };
+        if self.username.trim().is_empty() || self.password.is_empty() {
+            self.service_export_error(t("请填写用户名和 SSH 密码。", "Enter a username and SSH password.").into());
+            self.password.zeroize();
+            return;
+        }
+        let credentials = Credentials {
+            username: self.username.trim().to_owned(),
+            password: std::mem::take(&mut self.password),
+            sudo_password: String::new(),
+        };
+        let (tx, rx) = mpsc::channel();
+        self.receiver = Some(rx);
+        thread::spawn(move || {
+            let result = frame::headset_service_log(ip, credentials).and_then(|log| {
+                std::fs::write(&path, format!("\u{feff}{log}"))
+                    .map_err(|error| error.to_string()).map(|()| path)
+            });
+            let _ = tx.send(Event::ServiceLog(result));
+        });
+    }
+    fn service_export_error(&mut self, error: String) {
+        self.lines.push(format!("[ERROR] {error}"));
+        self.exported.push(format!("[ERROR] {error}"));
+        self.service_export_dialog = Some(error);
+    }
     pub fn take_log(&mut self) -> Vec<String> {
         std::mem::take(&mut self.exported)
     }
@@ -332,6 +380,22 @@ mod error_tests {
             ui.poll();
             assert!(ui.error_dialog.is_none());
         }
+    }
+
+    #[test]
+    fn service_log_export_failure_does_not_replace_setup_result() {
+        let mut ui = FrameUi::new(true);
+        ui.result = Some(frame::SetupResult::Success);
+        ui.password = "secret".into();
+        let (tx, rx) = mpsc::channel();
+        ui.receiver = Some(rx);
+        tx.send(Event::ServiceLog(Err("unavailable".into()))).unwrap();
+        ui.poll();
+        assert_eq!(ui.result, Some(frame::SetupResult::Success));
+        assert!(ui.password.is_empty());
+        assert!(ui.service_export_dialog.as_ref().unwrap().contains("unavailable"));
+        assert!(ui.lines.last().unwrap().contains("[ERROR]"));
+        assert!(!ui.busy());
     }
 
     #[test]

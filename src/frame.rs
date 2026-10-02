@@ -2,6 +2,7 @@
 use crate::i18n::{self, t};
 use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use ssh2::{HashType, KeyboardInteractivePrompt, Prompt, Session};
 use std::os::windows::ffi::OsStringExt;
 use std::{
@@ -39,6 +40,9 @@ pub const REPO: &str = "https://github.com/toorux/steam-frame-6ghz-tool";
 pub const IP_HELP: &str = "https://github.com/toorux/steam-frame-6ghz-tool#如何查看-frame-ip";
 pub const IP_HELP_EN: &str = "https://github.com/toorux/steam-frame-6ghz-tool/blob/main/README.en.md#finding-the-frame-ip";
 const GET_CONFIG: &str = "sudo -S -p '' cat /etc/conf.d/wireless-regdom";
+const WATCH_SCRIPT: &str = include_str!("../assets/frame-regdom-watch.sh");
+const WATCH_UNIT: &str = include_str!("../assets/frame-regdom-watch.service");
+const WATCH_SERVICE: &str = "steam-frame-regdom-watch.service";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Network {
@@ -398,6 +402,52 @@ pub fn probe(ip: Ipv4Addr) -> Result<Probe, String> {
     }
 }
 
+fn authenticate(session: &Session, credentials: &Credentials) -> Result<(), String> {
+    if session.userauth_password(&credentials.username, &credentials.password).is_err() {
+        struct PasswordPrompt<'a>(&'a str);
+        impl KeyboardInteractivePrompt for PasswordPrompt<'_> {
+            fn prompt<'a>(&mut self, _: &str, _: &str, prompts: &[Prompt<'a>]) -> Vec<String> {
+                if prompts.len() == 1 && !prompts[0].echo {
+                    vec![self.0.to_string()]
+                } else {
+                    vec![String::new(); prompts.len()]
+                }
+            }
+        }
+        session.userauth_keyboard_interactive(
+            &credentials.username,
+            &mut PasswordPrompt(&credentials.password),
+        ).map_err(|_| t("SSH 用户名或密码验证失败", "SSH username or password was rejected").to_string())?;
+    }
+    if !session.authenticated() {
+        return Err(t("SSH 验证未完成", "SSH authentication did not complete").into());
+    }
+    Ok(())
+}
+
+pub fn headset_service_log(ip: Ipv4Addr, credentials: Credentials) -> Result<String, String> {
+    let (session, fingerprint) = connect(ip)?;
+    match known_hosts()?.0.get(&ip.to_string()) {
+        Some(saved) if saved == &fingerprint => {}
+        Some(_) => return Err(t("SSH 主机密钥已变化；拒绝发送密码", "SSH host key changed; password was not sent").into()),
+        None => return Err(t("请先通过“连接并设置”信任头显，再导出服务日志。", "Trust the headset with Connect and set up before exporting its service log.").into()),
+    }
+    authenticate(&session, &credentials)?;
+    let sudo = if credentials.sudo_password.is_empty() { &credentials.password } else { &credentials.sudo_password };
+    let mut output_log = |_line: String| {};
+    let code = format!("sudo -S -p '' journalctl -u {WATCH_SERVICE} -b -n 500 --no-pager -o short-iso");
+    let (status, output) = command(&session, &code, Some(sudo), &mut output_log)?;
+    let mut redacted = output;
+    for secret in [&credentials.password, &credentials.sudo_password] {
+        if !secret.is_empty() { redacted = redacted.replace(secret, "[REDACTED]"); }
+    }
+    if status != 0 {
+        return Err(format!("{} (exit {status}): {}", t("无法读取头显服务日志", "Could not read the headset service log"),
+            redacted.trim()));
+    }
+    Ok(redacted)
+}
+
 pub struct Credentials {
     pub username: String,
     pub password: String,
@@ -415,8 +465,8 @@ pub enum SetupResult { AlreadySet, Success, NeedsRestart, Partial, Failed }
 impl SetupResult {
     pub fn message(self) -> &'static str {
         match self {
-            Self::AlreadySet => t("头显已设置为 US，无需重复设置。", "Your headset is already set to US. No changes were needed."),
-            Self::Success => t("设置成功；请自行重启头显后复查。", "Setup complete. Restart your headset and check again."),
+            Self::AlreadySet => t("头显已是 US，自动维护也已开启。", "US is already active, and automatic maintenance is running."),
+            Self::Success => t("设置成功；自动维护已开启，请重启头显测试。", "Setup complete. Automatic maintenance is running; restart your headset to test it."),
             Self::NeedsRestart => t("环境异常，本次设置不保证成功，请重启头显测试", "Unexpected configuration: setup cannot be guaranteed. Restart your headset and test it."),
             Self::Partial => t("设置部分完成，请查看日志中的已完成步骤和错误。", "Setup only partially completed. Check the log for changes and errors."),
             Self::Failed => t("设置失败，请查看日志。", "Setup failed. Check the log for details."),
@@ -562,6 +612,94 @@ fn reg_is_us(output: &str) -> bool {
     }
     global && phy0
 }
+fn watcher_paths() -> (&'static str, &'static str) {
+    ("/var/lib/steam-frame-6ghz-tool/regdom-watch.sh", "/etc/systemd/system/steam-frame-regdom-watch.service")
+}
+fn watcher_hash(content: &str) -> String { format!("{:x}", Sha256::digest(content.as_bytes())) }
+fn watcher_probe() -> String {
+    let (script, unit) = watcher_paths();
+    format!(r#"set -eu
+command -v iw >/dev/null; command -v stdbuf >/dev/null; command -v awk >/dev/null; command -v sha256sum >/dev/null; command -v systemctl >/dev/null; command -v findmnt >/dev/null
+test "$(findmnt -T /var -n -o TARGET)" = /var
+grep -Fxq '/etc/systemd/system/*.service' /usr/lib/rauc/atomic-update-keep.conf
+grep -Fxq '/etc/systemd/system/*.wants/**' /usr/lib/rauc/atomic-update-keep.conf
+test ! -L /var/lib/steam-frame-6ghz-tool
+test ! -L {script}
+test ! -L {unit}
+if test -e {script}; then
+  test -f {script}
+  grep -Fxq '# Managed by Steam Frame 6 GHz Tool. Do not edit in place.' {script} || {{ echo 'Existing watcher script is not managed by this program.' >&2; exit 1; }}
+fi
+if test -e {unit}; then
+  test -f {unit}
+  grep -Fxq '# Managed by Steam Frame 6 GHz Tool. Do not edit in place.' {unit} || {{ echo 'Existing watcher service is not managed by this program.' >&2; exit 1; }}
+fi
+if test -e {script} && test -e {unit} && test "$(sha256sum {script} | cut -d ' ' -f1)" = {script_hash} && test "$(sha256sum {unit} | cut -d ' ' -f1)" = {unit_hash} && systemctl is-enabled --quiet {service} && systemctl is-active --quiet {service}; then
+  printf ready
+else
+  printf install
+fi"#,
+        script = shell_quote(script), unit = shell_quote(unit),
+        script_hash = shell_quote(&watcher_hash(WATCH_SCRIPT)),
+        unit_hash = shell_quote(&watcher_hash(WATCH_UNIT)), service = WATCH_SERVICE)
+}
+fn watcher_install() -> String {
+    let (script, unit) = watcher_paths();
+    format!(r#"set -eu
+install -d -m 755 /var/lib/steam-frame-6ghz-tool
+test "$(stat -c %u /var/lib/steam-frame-6ghz-tool)" = 0
+if test ! -e {script} || test "$(sha256sum {script} | cut -d ' ' -f1)" != {script_hash}; then
+  if test -e {script}; then
+    backup=$(mktemp /var/lib/steam-frame-6ghz-tool/regdom-watch.sh.backup.XXXXXX)
+    cp -p -- {script} "$backup"
+    printf 'Backup: %s\n' "$backup"
+  fi
+  tmp=$(mktemp /var/lib/steam-frame-6ghz-tool/.regdom-watch.XXXXXX)
+  trap 'rm -f -- "$tmp"' EXIT
+  printf %s {script_content} > "$tmp"
+  chmod 755 "$tmp"
+  mv -f -- "$tmp" {script}
+  trap - EXIT
+fi
+if test ! -e {unit} || test "$(sha256sum {unit} | cut -d ' ' -f1)" != {unit_hash}; then
+  if test -e {unit}; then
+    backup=$(mktemp /etc/systemd/system/steam-frame-regdom-watch.service.backup.XXXXXX)
+    cp -p -- {unit} "$backup"
+    printf 'Backup: %s\n' "$backup"
+  fi
+  tmp=$(mktemp /etc/systemd/system/.steam-frame-regdom-watch.XXXXXX)
+  trap 'rm -f -- "$tmp"' EXIT
+  printf %s {unit_content} > "$tmp"
+  chmod 644 "$tmp"
+  mv -f -- "$tmp" {unit}
+  trap - EXIT
+fi
+test "$(sha256sum {script} | cut -d ' ' -f1)" = {script_hash}
+test "$(sha256sum {unit} | cut -d ' ' -f1)" = {unit_hash}
+systemctl daemon-reload
+systemctl enable {service}
+systemctl restart {service}
+sleep 2
+systemctl is-enabled --quiet {service}
+systemctl is-active --quiet {service}
+printf 'Automatic regulatory watcher installed and running.'"#,
+        script = shell_quote(script), unit = shell_quote(unit),
+        script_content = shell_quote(WATCH_SCRIPT), unit_content = shell_quote(WATCH_UNIT),
+        script_hash = shell_quote(&watcher_hash(WATCH_SCRIPT)),
+        unit_hash = shell_quote(&watcher_hash(WATCH_UNIT)), service = WATCH_SERVICE)
+}
+fn ensure_watcher(run: &mut impl FnMut(&str) -> Result<String, String>, changed: &mut bool) -> Result<(), String> {
+    let state = run(&format!("sudo -S -p '' sh -c {}", shell_quote(&watcher_probe())))?;
+    match state.as_str() {
+        "ready" => Ok(()),
+        "install" => {
+            *changed = true;
+            run(&format!("sudo -S -p '' sh -c {}", shell_quote(&watcher_install())))?;
+            Ok(())
+        }
+        _ => Err(t("自动维护状态无法确认；未安装。", "Could not confirm automatic maintenance state; not installed.").into()),
+    }
+}
 fn apply_settings(run: &mut impl FnMut(&str) -> Result<String, String>, changed: &mut bool, abnormal: &mut bool) -> Result<(), String> {
         run("sudo -S -p '' true")?;
         run(&format!("sudo -S -p '' sh -c {}", shell_quote(PREFLIGHT)))?;
@@ -614,36 +752,7 @@ pub fn execute(ip: Ipv4Addr, expected: &str, credentials: Credentials, mut emit:
             .into());
         }
         save_host(ip, expected)?;
-        if session
-            .userauth_password(&credentials.username, &credentials.password)
-            .is_err()
-        {
-            struct PasswordPrompt<'a>(&'a str);
-            impl KeyboardInteractivePrompt for PasswordPrompt<'_> {
-                fn prompt<'a>(&mut self, _: &str, _: &str, prompts: &[Prompt<'a>]) -> Vec<String> {
-                    if prompts.len() == 1 && !prompts[0].echo {
-                        vec![self.0.to_string()]
-                    } else {
-                        vec![String::new(); prompts.len()]
-                    }
-                }
-            }
-            session
-                .userauth_keyboard_interactive(
-                    &credentials.username,
-                    &mut PasswordPrompt(&credentials.password),
-                )
-                .map_err(|_| {
-                    t(
-                        "SSH 用户名或密码验证失败",
-                        "SSH username or password was rejected",
-                    )
-                    .to_string()
-                })?;
-        }
-        if !session.authenticated() {
-            return Err(t("SSH 验证未完成", "SSH authentication did not complete").into());
-        }
+        authenticate(&session, &credentials)?;
 
         log(t("SSH 登录成功；检查环境…", "SSH login succeeded; checking environment…").into());
         let sudo = if credentials.sudo_password.is_empty() { &credentials.password } else { &credentials.sudo_password };
@@ -652,7 +761,8 @@ pub fn execute(ip: Ipv4Addr, expected: &str, credentials: Credentials, mut emit:
             if status != 0 { return Err(format!("{} (exit {status})", t("远端命令失败，请查看日志", "Remote command failed; see log"))); }
             Ok(output)
         };
-        apply_settings(&mut run, &mut changed, &mut abnormal)
+        apply_settings(&mut run, &mut changed, &mut abnormal)?;
+        ensure_watcher(&mut run, &mut changed)
     })();
     let status = match &result {
         Ok(()) if !changed => SetupResult::AlreadySet,
@@ -765,6 +875,30 @@ mod tests {
         }, &mut changed, &mut abnormal).unwrap();
         assert_eq!(runtime_sets, 1);
         assert!(changed);
+    }
+    #[test]
+    fn automatic_watcher_is_idempotent_and_reports_install_failures() {
+        let mut changed = false;
+        let mut calls = 0;
+        ensure_watcher(&mut |code| {
+            calls += 1;
+            assert!(code.contains("steam-frame-regdom-watch.service"));
+            Ok("ready".into())
+        }, &mut changed).unwrap();
+        assert_eq!(calls, 1);
+        assert!(!changed);
+
+        ensure_watcher(&mut |code| {
+            calls += 1;
+            if code.contains("systemctl restart") { Err("install failed".into()) }
+            else { Ok("install".into()) }
+        }, &mut changed).unwrap_err();
+        assert_eq!(calls, 3);
+        assert!(changed);
+        assert!(watcher_probe().contains("/etc/systemd/system/*.service"));
+        assert!(watcher_install().contains("systemctl is-active --quiet"));
+        assert!(WATCH_SCRIPT.contains("stdbuf -oL iw event -T"));
+        assert!(WATCH_SCRIPT.contains("attempts >= 3"));
     }
     #[test]
     #[ignore = "Read-only check of local network and optional FRAME_TEST_IP SSH handshake"]

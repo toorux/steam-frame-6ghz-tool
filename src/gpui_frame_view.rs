@@ -89,6 +89,15 @@ impl FrameView {
                 self.workflow.exported.push(line);
         }
     }
+    fn export_service_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workflow.busy() || self.workflow.demo { return; }
+        let Some(path) = rfd::FileDialog::new().add_filter(t("日志", "Log"), &["txt"])
+            .set_file_name("steam-frame-headset-service-log.txt").save_file() else { return; };
+        self.sync_fields(cx);
+        self.clear_passwords(window, cx);
+        self.workflow.export_service_log(path);
+        cx.notify();
+    }
     fn card() -> Div {
         div().w_full().rounded_lg().border_1().border_color(rgb(BORDER)).bg(rgb(0xffffff))
             .p_4().flex().flex_col().gap_3()
@@ -153,11 +162,16 @@ impl Render for FrameView {
                     .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap_1().child(Self::label(t("用户名", "Username"))).child(Input::new(&self.username).id("username").w_full().disabled(busy)))
                     .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap_1().child(Self::label(t("SSH 密码", "SSH password"))).child(Input::new(&self.password).id("ssh-password").w_full().disabled(busy))))
                 .child(Self::muted(t("程序不会收集、保存或上传你的密码；仅在本机内存用于本次 SSH / sudo 验证，不写入日志。", "Your password is not collected, saved, or uploaded; it is only used in memory for this SSH / sudo session and is never logged.")))
+                .child(Self::muted(t("将在头显安装自动维护：开机或区域变化时按需恢复 US。", "Installs headset auto-maintenance to restore US after startup or regulatory changes.")))
                 .child(div().flex().justify_between()
                     .child(Self::help_link(Button::new("ssh-help").label(t("如何开启 SSH", "How to enable SSH")))
                         .on_click(cx.listener(|_, _, _, cx| cx.open_url(t(frame::SSH_HELP, frame::SSH_HELP_EN)))))
-                    .child(Button::new("probe").label(t("连接并设置", "Connect and set up")).primary().disabled(busy)
-                        .on_click(cx.listener(|this, _, window, cx| { if !this.workflow.busy() && !this.workflow.demo { this.run_probe(window, cx); } })))));
+                    .child(div().flex().items_center().gap_2()
+                        .child(Button::new("export-service-log").label(t("导出头显服务日志", "Export service log"))
+                            .ghost().small().text_color(rgb(MUTED)).disabled(busy || self.workflow.demo)
+                            .on_click(cx.listener(|this, _, window, cx| this.export_service_log(window, cx))))
+                        .child(Button::new("probe").label(t("连接并设置", "Connect and set up")).primary().disabled(busy)
+                            .on_click(cx.listener(|this, _, window, cx| { if !this.workflow.busy() && !this.workflow.demo { this.run_probe(window, cx); } }))))));
         let lines = crate::gpui_log::text("headset-log-text", self.workflow.lines.iter()
             .map(|line| (line.clone(), crate::ui_log::level(line) == crate::ui_log::Level::Error)));
         let mut page = div().size_full().relative().bg(rgb(0xf7fafc)).flex().flex_col()
@@ -179,7 +193,7 @@ impl Render for FrameView {
                     .label(t("首次连接：我已核对并信任此指纹", "First connection: I verified and trust this fingerprint"))
                     .checked(self.workflow.trust_new)
                     .on_change(cx.listener(|this, value, _, cx| { this.workflow.trust_new = *value; cx.notify(); }))))
-                .child(Self::muted(t("请通过可信渠道核对指纹。信任后将自动检查环境并设置 US，不会自动重启。", "Verify this fingerprint through a trusted source. Continuing will check the environment and set the region to US without restarting your headset.")))
+                .child(Self::muted(t("请通过可信渠道核对指纹。继续后将设置 US 并安装自动维护服务；不会自动重启。", "Verify this fingerprint through a trusted source. Continuing will set US and install automatic maintenance without restarting your headset.")))
                 .child(div().flex().justify_end().gap_2()
                     .child(Button::new("cancel-preview").label(t("取消", "Cancel"))
                         .on_click(cx.listener(|this, _, window, cx| this.cancel_preview(window, cx))))
@@ -202,6 +216,14 @@ impl Render for FrameView {
                     .child(Self::label(error))
                     .child(div().flex().justify_end().child(Button::new("dismiss-frame-error").label(t("知道了", "OK")).primary()
                         .on_click(cx.listener(|this, _, _, cx| { this.workflow.error_dialog = None; cx.notify(); }))))));
+        }
+        if let Some(message) = self.workflow.service_export_dialog.clone() {
+            page = page.child(div().absolute().inset_0().occlude().bg(rgba(0x1f3445b0)).flex().items_center().justify_center()
+                .child(Self::card().w(px(520.)).p_6().gap_5()
+                    .child(Self::label(t("头显服务日志", "Headset service log")).text_xl())
+                    .child(Self::label(message))
+                    .child(div().flex().justify_end().child(Button::new("dismiss-service-export").label(t("知道了", "OK")).primary()
+                        .on_click(cx.listener(|this, _, _, cx| { this.workflow.service_export_dialog = None; cx.notify(); }))))));
         }
         page
     }
