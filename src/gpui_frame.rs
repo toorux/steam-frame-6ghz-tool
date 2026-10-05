@@ -173,7 +173,7 @@ impl FrameUi {
                     Ok(probe)
                         if self.ip.trim() == ip.to_string() && self.username.trim() == username =>
                     {
-                        self.trust_new = !probe.new_host;
+                        self.trust_new = probe.previous.as_deref() == Some(probe.fingerprint.as_str());
                         self.preview = Some((ip, username, probe));
                         self.status_error = false;
                         self.status = t(
@@ -310,6 +310,7 @@ impl FrameUi {
             let _ = tx.send(Event::Execute(frame::execute(
                 ip,
                 &preview.fingerprint,
+                preview.previous.as_deref(),
                 credentials,
                 |line| { let _ = tx.send(Event::Log(line)); },
             )));
@@ -406,7 +407,7 @@ mod error_tests {
         let (tx, rx) = mpsc::channel();
         ui.receiver = Some(rx);
         tx.send(Event::Probe(ui.ip.parse().unwrap(), "steamos".into(), Ok(frame::Probe {
-            fingerprint: "SHA256:test".into(), new_host: true,
+            fingerprint: "SHA256:test".into(), previous: None,
         }))).unwrap();
         ui.poll();
         assert!(ui.preview.is_some() && ui.busy());
@@ -416,6 +417,24 @@ mod error_tests {
         assert_eq!(ui.password, "secret");
         ui.error("changed fingerprint".into());
         assert!(ui.password.is_empty() && ui.preview.is_none());
+    }
+
+    #[test]
+    fn changed_host_key_waits_for_retrust_without_sending_password() {
+        let mut ui = FrameUi::new(true);
+        ui.ip = "192.0.2.1".into();
+        ui.password = "secret".into();
+        let (tx, rx) = mpsc::channel();
+        ui.receiver = Some(rx);
+        tx.send(Event::Probe(ui.ip.parse().unwrap(), "steamos".into(), Ok(frame::Probe {
+            fingerprint: "SHA256:new".into(), previous: Some("SHA256:old".into()),
+        }))).unwrap();
+        ui.poll();
+        assert!(ui.preview.is_some() && ui.busy());
+        assert!(!ui.trust_new);
+        assert_eq!(ui.password, "secret");
+        ui.probe();
+        assert!(ui.receiver.is_none());
     }
 
     #[test]

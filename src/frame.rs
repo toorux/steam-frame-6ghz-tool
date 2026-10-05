@@ -322,21 +322,10 @@ fn known_hosts() -> Result<KnownHosts, String> {
         }),
     }
 }
-fn save_host(ip: Ipv4Addr, fingerprint: &str) -> Result<(), String> {
+fn save_host(ip: Ipv4Addr, fingerprint: &str, previous: Option<&str>) -> Result<(), String> {
     let path = known_hosts_path()?;
     let mut hosts = known_hosts()?;
-    match hosts.0.get(&ip.to_string()) {
-        Some(old) if old != fingerprint => {
-            return Err(t(
-                "SSH 主机密钥已变化；拒绝发送密码",
-                "SSH host key changed; password was not sent",
-            )
-            .into());
-        }
-        Some(_) => return Ok(()),
-        None => {}
-    }
-    hosts.0.insert(ip.to_string(), fingerprint.into());
+    if !trust_record(&mut hosts, ip, fingerprint, previous)? { return Ok(()); }
     fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
     fs::write(
         path,
@@ -349,6 +338,18 @@ fn save_host(ip: Ipv4Addr, fingerprint: &str) -> Result<(), String> {
             format!("无法保存 SSH 主机密钥：{e}")
         }
     })
+}
+fn trust_record(hosts: &mut KnownHosts, ip: Ipv4Addr, fingerprint: &str, previous: Option<&str>) -> Result<bool, String> {
+    if hosts.0.get(&ip.to_string()).map(String::as_str) != previous {
+        return Err(t(
+            "保存的 SSH 主机密钥在确认后发生变化；拒绝继续",
+            "Saved SSH host key changed after confirmation; stopped",
+        )
+        .into());
+    }
+    if previous == Some(fingerprint) { return Ok(false); }
+    hosts.0.insert(ip.to_string(), fingerprint.into());
+    Ok(true)
 }
 fn connect(ip: Ipv4Addr) -> Result<(Session, String), String> {
     let stream =
@@ -384,22 +385,12 @@ fn connect(ip: Ipv4Addr) -> Result<(Session, String), String> {
 }
 pub struct Probe {
     pub fingerprint: String,
-    pub new_host: bool,
+    pub previous: Option<String>,
 }
 pub fn probe(ip: Ipv4Addr) -> Result<Probe, String> {
     let (_, fingerprint) = connect(ip)?;
     let hosts = known_hosts()?;
-    match hosts.0.get(&ip.to_string()) {
-        Some(old) if old != &fingerprint => Err(t(
-            "SSH 主机密钥已变化；拒绝发送密码",
-            "SSH host key changed; password was not sent",
-        )
-        .into()),
-        old => Ok(Probe {
-            new_host: old.is_none(),
-            fingerprint,
-        }),
-    }
+    Ok(Probe { previous: hosts.0.get(&ip.to_string()).cloned(), fingerprint })
 }
 
 fn authenticate(session: &Session, credentials: &Credentials) -> Result<(), String> {
@@ -720,7 +711,7 @@ fn apply_settings(run: &mut impl FnMut(&str) -> Result<String, String>, changed:
         if !reg_is_us(&state) { return Err(t("配置已写入，但未确认全局及 phy#0 都为 US", "Configuration saved, but global and phy#0 regions were not both confirmed as US").into()); }
         Ok(())
 }
-pub fn execute(ip: Ipv4Addr, expected: &str, credentials: Credentials, mut emit: impl FnMut(String)) -> Outcome {
+pub fn execute(ip: Ipv4Addr, expected: &str, previous: Option<&str>, credentials: Credentials, mut emit: impl FnMut(String)) -> Outcome {
     // Redact complete lines, including secrets split across SSH read chunks.
     let mut log = |mut line: String| {
         for secret in [&credentials.password, &credentials.sudo_password] {
@@ -740,18 +731,14 @@ pub fn execute(ip: Ipv4Addr, expected: &str, credentials: Credentials, mut emit:
             .into());
         }
         let hosts = known_hosts()?;
-        if hosts
-            .0
-            .get(&ip.to_string())
-            .is_some_and(|old| old != expected)
-        {
+        if hosts.0.get(&ip.to_string()).map(String::as_str) != previous {
             return Err(t(
-                "SSH 主机密钥已变化；拒绝发送密码",
-                "SSH host key changed; password was not sent",
+                "保存的 SSH 主机密钥在确认后发生变化；拒绝发送密码",
+                "Saved SSH host key changed after confirmation; password was not sent",
             )
             .into());
         }
-        save_host(ip, expected)?;
+        save_host(ip, expected, previous)?;
         authenticate(&session, &credentials)?;
 
         log(t("SSH 登录成功；检查环境…", "SSH login succeeded; checking environment…").into());
@@ -778,6 +765,22 @@ pub fn execute(ip: Ipv4Addr, expected: &str, credentials: Credentials, mut emit:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retrust_replaces_only_the_confirmed_host_key() {
+        let ip: Ipv4Addr = "192.0.2.1".parse().unwrap();
+        let other: Ipv4Addr = "192.0.2.2".parse().unwrap();
+        let mut hosts = KnownHosts::default();
+        assert!(trust_record(&mut hosts, ip, "SHA256:old", None).unwrap());
+        assert!(trust_record(&mut hosts, other, "SHA256:other", None).unwrap());
+        assert!(!trust_record(&mut hosts, ip, "SHA256:old", Some("SHA256:old")).unwrap());
+        assert!(trust_record(&mut hosts, ip, "SHA256:new", None).is_err());
+        assert!(trust_record(&mut hosts, ip, "SHA256:new", Some("SHA256:wrong")).is_err());
+        assert_eq!(hosts.0[&ip.to_string()], "SHA256:old");
+        assert!(trust_record(&mut hosts, ip, "SHA256:new", Some("SHA256:old")).unwrap());
+        assert_eq!(hosts.0[&ip.to_string()], "SHA256:new");
+        assert_eq!(hosts.0[&other.to_string()], "SHA256:other");
+        assert!(trust_record(&mut hosts, ip, "SHA256:third", Some("SHA256:old")).is_err());
+    }
     #[test]
     fn discovery_filters_exact_hostname_and_config_is_strict() {
         assert!(virtual_adapter("Hyper-V Virtual Ethernet Adapter"));

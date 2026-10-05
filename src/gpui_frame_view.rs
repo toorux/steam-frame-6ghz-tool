@@ -124,7 +124,7 @@ impl Render for FrameView {
             candidates = candidates.child(Self::muted(t("未发现 Frame；可直接填写 IP。", "No Frame found; enter its IP directly.")));
         }
         let workflow_status = self.workflow.status.clone();
-        let preview = self.workflow.preview.as_ref().map(|(ip, user, probe)| (ip.to_string(), user.clone(), probe.fingerprint.clone(), probe.new_host));
+        let preview = self.workflow.preview.as_ref().map(|(ip, user, probe)| (ip.to_string(), user.clone(), probe.fingerprint.clone(), probe.previous.clone()));
         let refresh_angle = if scan_running {
             (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default().as_millis() % 840) as f32 * std::f32::consts::TAU / 840.0
@@ -184,20 +184,23 @@ impl Render for FrameView {
                             .on_click(cx.listener(|this, _, _, cx| { this.export_log(); cx.notify(); }))))
                     .when(!self.workflow.status_error && !workflow_status.is_empty(), |card| card.child(Self::muted(workflow_status)))
                     .child(crate::gpui_log::pane("frame-results", &self.result_scroll, lines))));
-        if let Some((ip, user, fingerprint, new_host)) = preview {
+        if let Some((ip, user, fingerprint, previous)) = preview {
+            let changed = previous.as_ref().is_some_and(|old| old != &fingerprint);
+            let needs_trust = previous.is_none() || changed;
             let confirmation = Self::card().w(px(670.)).p_6().gap_5()
-                .child(Self::label(t("信任此头显？", "Trust this headset?")).text_xl())
+                .child(Self::label(if changed { t("SSH 主机指纹已更改", "SSH host key changed") } else { t("信任此头显？", "Trust this headset?") }).text_xl())
                 .child(Self::label(format!("{}: {user}@{ip}", t("目标", "Target"))))
-                .child(Self::label(format!("SSH: {fingerprint}")))
-                .when(new_host, |card| card.child(Checkbox::new("trust-fingerprint")
-                    .label(t("首次连接：我已核对并信任此指纹", "First connection: I verified and trust this fingerprint"))
+                .when(changed, |card| card.child(Self::muted(format!("{}: {}", t("原指纹", "Previous fingerprint"), previous.as_deref().unwrap_or_default()))))
+                .child(Self::label(format!("{}: {fingerprint}", t("当前指纹", "Current fingerprint"))))
+                .when(needs_trust, |card| card.child(Checkbox::new("trust-fingerprint")
+                    .label(if changed { t("我已通过可信渠道核对新指纹，确认重新信任此头显", "I verified the new fingerprint through a trusted source and trust this headset again") } else { t("首次连接：我已核对并信任此指纹", "First connection: I verified and trust this fingerprint") })
                     .checked(self.workflow.trust_new)
                     .on_change(cx.listener(|this, value, _, cx| { this.workflow.trust_new = *value; cx.notify(); }))))
-                .child(Self::muted(t("请通过可信渠道核对指纹。继续后将设置 US 并安装自动维护服务；不会自动重启。", "Verify this fingerprint through a trusted source. Continuing will set US and install automatic maintenance without restarting your headset.")))
+                .child(Self::muted(if changed { t("指纹变化可能是重装系统，也可能是连接到了其他设备。核对前不会发送密码。", "A changed key may mean the headset was reinstalled—or that this is another device. No password will be sent before you confirm.") } else { t("请通过可信渠道核对指纹。继续后将设置 US 并安装自动维护服务；不会自动重启。", "Verify this fingerprint through a trusted source. Continuing will set US and install automatic maintenance without restarting your headset.") }))
                 .child(div().flex().justify_end().gap_2()
                     .child(Button::new("cancel-preview").label(t("取消", "Cancel"))
                         .on_click(cx.listener(|this, _, window, cx| this.cancel_preview(window, cx))))
-                    .child(Button::new("execute").label(t("信任并继续", "Trust and continue")).primary()
+                    .child(Button::new("execute").label(if changed { t("重新信任并继续", "Trust new key and continue") } else { t("信任并继续", "Trust and continue") }).primary()
                         .disabled(!self.workflow.trust_new)
                         .on_click(cx.listener(|this, _, window, cx| this.run_execute(window, cx)))));
             page = page.child(div().absolute().inset_0().occlude().bg(rgba(0x1f3445b0)).flex().items_center().justify_center().child(confirmation));
