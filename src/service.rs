@@ -166,9 +166,17 @@ pub struct State {
     pub enabled: bool,
     pub exit_code: u32,
     pub needs_update: bool,
+    pub needs_repair: bool,
 }
 fn different_binary(installed: &[u8], current: &[u8]) -> bool {
     installed.len() != current.len() || Sha256::digest(installed) != Sha256::digest(current)
+}
+fn copy_state(installed: std::io::Result<Vec<u8>>, current: &[u8]) -> Result<(bool, bool)> {
+    match installed {
+        Ok(installed) => Ok((different_binary(&installed, current), false)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((false, true)),
+        Err(e) => Err(format!("读取服务程序副本失败：{e}")),
+    }
 }
 pub fn state() -> Result<State> {
     let manager = Sc::manager(SC_MANAGER_CONNECT)?;
@@ -183,16 +191,17 @@ pub fn state() -> Result<State> {
         "读取服务运行状态",
     )?;
     let running = status.dwCurrentState != SERVICE_STOPPED;
-    let installed = fs::read(dir.join(EXE)).map_err(|e| format!("读取服务程序副本失败：{e}"))?;
     let current = fs::read(std::env::current_exe().map_err(|e| e.to_string())?)
         .map_err(|e| format!("读取当前程序失败：{e}"))?;
+    let (needs_update, needs_repair) = copy_state(fs::read(dir.join(EXE)), &current)?;
     Ok(State {
         installed: true,
         paused: !running && dir.join(PAUSED).exists(),
         running,
         enabled,
         exit_code: status.dwWin32ExitCode,
-        needs_update: different_binary(&installed, &current),
+        needs_update,
+        needs_repair,
     })
 }
 
@@ -204,11 +213,25 @@ pub fn reinstall() -> Result<String> {
     if current.running || current.paused {
         return Err("服务正在处理或已暂停；先查看日志并人工复查，暂不更新".into());
     }
-    if !current.needs_update {
+    if !current.needs_update && !current.needs_repair {
         return Ok("服务副本已是当前版本，无需更新".into());
     }
     uninstall()?;
-    install().map_err(|e| format!("旧服务已卸载，但安装新版失败：{e}"))
+    install().map_err(|e| format!("旧服务已卸载，但重新安装失败：{e}"))
+}
+
+fn clear_empty_install_directory(dir: &Path) -> Result<()> {
+    match fs::symlink_metadata(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("检查服务安装目录失败：{e}")),
+        Ok(metadata) => {
+            if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Err(format!("服务安装目录已存在且不是普通目录：{}；未接管", dir.display()));
+            }
+            // Remove only an empty orphan, then create it atomically with our protected ACL.
+            fs::remove_dir(dir).map_err(|e| format!("服务安装目录已存在且无法安全清理：{}：{e}", dir.display()))
+        }
+    }
 }
 
 fn secure_directory(dir: &Path) -> Result<()> {
@@ -279,6 +302,7 @@ pub fn install() -> Result<String> {
         return Err("自动应用服务已存在；更新或解除暂停请先卸载再开启".into());
     }
     let dir = directory()?;
+    clear_empty_install_directory(&dir)?;
     secure_directory(&dir)?;
     let result = (|| {
         let source = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -694,6 +718,13 @@ mod tests {
         assert!(different_binary(b"old", b"new"));
     }
     #[test]
+    fn missing_service_copy_requires_repair_but_access_errors_are_not_hidden() {
+        assert_eq!(copy_state(Ok(b"same".to_vec()), b"same").unwrap(), (false, false));
+        assert_eq!(copy_state(Ok(b"old".to_vec()), b"new").unwrap(), (true, false));
+        assert_eq!(copy_state(Err(std::io::Error::from(std::io::ErrorKind::NotFound)), b"new").unwrap(), (false, true));
+        assert!(copy_state(Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)), b"new").is_err());
+    }
+    #[test]
     fn access_errors_explain_how_to_restart_as_administrator() {
         for code in [ERROR_ACCESS_DENIED, ERROR_PRIVILEGE_NOT_HELD] {
             let text = describe_error(
@@ -738,6 +769,19 @@ mod tests {
             }
             let _ = fs::remove_dir(&self.0);
         }
+    }
+    #[test]
+    fn only_an_empty_orphan_install_directory_can_be_cleared() {
+        let parent = TestDir::new();
+        let install = parent.0.join("install");
+        assert!(clear_empty_install_directory(&install).is_ok());
+        fs::create_dir(&install).unwrap();
+        fs::write(install.join("unknown.txt"), "keep").unwrap();
+        assert!(clear_empty_install_directory(&install).is_err());
+        assert_eq!(fs::read(install.join("unknown.txt")).unwrap(), b"keep");
+        fs::remove_file(install.join("unknown.txt")).unwrap();
+        clear_empty_install_directory(&install).unwrap();
+        assert!(!install.exists());
     }
     fn report(uncertain: bool) -> backend::Report {
         backend::Report {

@@ -242,6 +242,7 @@ impl Dashboard {
             MainModal::SetUs => (t("设置 US？", "Set this adapter to US?"), t("只向当前适配器提交一次设置，然后复查状态。", "Send the setting once, then check the adapter again.")),
             MainModal::EnableAuto => (t("开启自动应用？", "Turn on automatic restore?"), t("安装 Windows 服务；需要管理员权限。", "This installs a Windows service and requires administrator access.")),
             MainModal::DisableAuto => (t("关闭自动应用？", "Turn off automatic restore?"), t("卸载服务，保留日志。", "The service will be removed; logs will be kept.")),
+            MainModal::UpdateService if self.data.auto_state.is_some_and(|s| s.needs_repair) => (t("修复自动应用服务？", "Repair automatic restore?"), t("服务程序副本缺失。核对服务归属后卸载并重装；不会接管未知文件或解除暂停保护。", "The service executable is missing. The app will verify the service, then remove and reinstall it without adopting unknown files or clearing a safety pause.")),
             MainModal::UpdateService => (t("更新服务副本？", "Update the background service?"), t("卸载并重新安装服务，保留日志；不会解除暂停保护。", "Reinstall the service without deleting logs or clearing a safety pause.")),
             MainModal::UpdateApp => (t("发现新版本", "New version available"), t("打开对应 Release 页面。下载后请自行替换程序。", "Open the Release page. Download and replace the app manually.")),
             MainModal::DisablePower => (t("关闭网卡节能？", "Disable adapter power saving?"), t("仅取消此网卡的“允许计算机关闭此设备以节约电源”。可能增加耗电；需要管理员权限。不修改其他网卡或全局电源计划。", "Turn off ‘Allow the computer to turn off this device to save power’ for this adapter only. This may increase power usage and requires administrator access. Other adapters and the power plan are unchanged.")),
@@ -285,8 +286,10 @@ impl Render for Dashboard {
                 .unwrap_or_default().as_millis() % 840) as f32 * std::f32::consts::TAU / 840.0
         } else { 0.0 };
         let auto = self.data.auto_state.unwrap_or_default();
-        let auto_label = if auto.installed { t("已开启", "Enabled") } else { t("未开启", "Off") };
-        let service_detail = if auto.running { t("正在处理设备", "Processing an adapter") }
+        let auto_label = if auto.needs_repair { t("需要修复", "Needs repair") }
+            else if auto.installed { t("已开启", "Enabled") } else { t("未开启", "Off") };
+        let service_detail = if auto.needs_repair { t("服务程序副本缺失，自动应用不可用。", "The service executable is missing; automatic restore is unavailable.") }
+            else if auto.running { t("正在处理设备", "Processing an adapter") }
             else if auto.paused { t("已暂停，等待人工检查", "Paused for manual inspection") }
             else if auto.installed && !auto.enabled { t("已安装但未启用", "Installed but disabled") }
             else { t("开机、插拔时按需恢复；处理结束后退出。", "Restores on startup and reconnect, then exits.") };
@@ -369,13 +372,13 @@ impl Render for Dashboard {
         let automation = Self::card()
             .child(div().flex().items_center().gap_3()
                 .child(Self::label(t("自动应用", "Automatic restore")).text_lg())
-                .child(Self::label(auto_label).text_color(rgb(if auto.paused { ERROR } else { INK })))
+                .child(Self::label(auto_label).text_color(rgb(if auto.paused || auto.needs_repair { ERROR } else { INK })))
                 .child(div().flex_1())
                 .child(Button::new("toggle-auto").label(if auto.installed { t("关闭并卸载", "Turn off") } else { t("开启自动应用", "Turn on") })
                     .on_click(cx.listener(|this, _, _, cx| { this.modal = Some(if this.data.auto_state.is_some_and(|s| s.installed) { MainModal::DisableAuto } else { MainModal::EnableAuto }); cx.notify(); })))
-                .when(auto.needs_update, |row| row.child(Button::new("update-service").label(t("更新服务", "Update service")).primary()
+                .when(auto.needs_update || auto.needs_repair, |row| row.child(Button::new("update-service").label(if auto.needs_repair { t("修复服务", "Repair service") } else { t("更新服务", "Update service") }).primary()
                     .on_click(cx.listener(|this, _, _, cx| { this.modal = Some(MainModal::UpdateService); cx.notify(); })))))
-            .child(Self::muted(if auto.installed && auto.running { service_detail } else {
+            .child(Self::muted(if auto.needs_repair || auto.installed && auto.running { service_detail } else {
                 t("开启后，程序将会在必要时自动重设国家码，避免重启等情况导致国家码恢复", "When enabled, the service restores US when needed, including after a restart or reconnect.")
             }))
             .when(auto.exit_code != 0, |card| card.child(Self::muted(format!("{}: {}", t("服务退出码", "Service exit code"), auto.exit_code))))
