@@ -13,6 +13,8 @@ pub(crate) struct FrameView {
     username: Entity<InputState>,
     password: Entity<InputState>,
     result_scroll: ScrollHandle,
+    export_receiver: Option<Receiver<Result<Option<std::path::PathBuf>, String>>>,
+    service_export_receiver: Option<Receiver<Result<Option<std::path::PathBuf>, String>>>,
 }
 
 impl FrameView {
@@ -22,6 +24,7 @@ impl FrameView {
             let interval = this.update(cx, |view, cx| {
                 let previous = view.workflow.lines.len();
                 view.workflow.poll();
+                view.poll_exports();
                 if previous != view.workflow.lines.len() { view.result_scroll.scroll_to_bottom(); }
                 share_logs(view.workflow.take_log());
                 cx.notify();
@@ -36,6 +39,8 @@ impl FrameView {
             username: cx.new(|cx| InputState::new(window, cx).default_value("steamos")),
             password: cx.new(|cx| InputState::new(window, cx).masked(true)),
             result_scroll: ScrollHandle::new(),
+            export_receiver: None,
+            service_export_receiver: None,
         }
     }
     fn sync_fields(&mut self, cx: &App) {
@@ -79,24 +84,76 @@ impl FrameView {
         cx.notify();
     }
     fn export_log(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().add_filter(t("日志", "Log"), &["txt"])
-            .set_file_name("steam-frame-headset-log.txt").save_file()
-            && let Err(error) = std::fs::write(&path, format!("\u{feff}{}\n", self.workflow.lines.join("\n"))) {
+        if self.export_receiver.is_some() { return; }
+        let filter = t("日志", "Log").to_owned();
+        let text = format!("\u{feff}{}\n", self.workflow.lines.join("\n"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.export_receiver = Some(rx);
+        std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(|| {
+                if let Some(path) = rfd::FileDialog::new().add_filter(filter.as_str(), &["txt"])
+                    .set_file_name("steam-frame-headset-log.txt").save_file() {
+                    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+                    Ok(Some(path))
+                } else { Ok(None) }
+            }).unwrap_or_else(|_| Err("保存对话框意外终止".into()));
+            let _ = tx.send(result);
+        });
+    }
+    fn export_service_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workflow.busy() || self.workflow.demo || self.service_export_receiver.is_some() { return; }
+        self.sync_fields(cx);
+        self.clear_passwords(window, cx);
+        let filter = t("日志", "Log").to_owned();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.service_export_receiver = Some(rx);
+        std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(|| Ok(rfd::FileDialog::new()
+                .add_filter(filter.as_str(), &["txt"])
+                .set_file_name("steam-frame-headset-service-log.txt").save_file()))
+                .unwrap_or_else(|_| Err("保存对话框意外终止".into()));
+            let _ = tx.send(result);
+        });
+    }
+    fn poll_exports(&mut self) {
+        let export = self.export_receiver.as_ref().and_then(|rx| match rx.try_recv() {
+            Ok(result) => Some(result),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err("保存对话框线程意外结束".into())),
+        });
+        if let Some(result) = export {
+            self.export_receiver = None;
+            if let Err(error) = result {
                 self.workflow.error_dialog = Some(format!("{} {error}", t("日志导出失败。", "Could not export the log.")));
                 self.workflow.result = Some(frame::SetupResult::Failed);
                 let line = format!("[ERROR] {} {error}", t("日志导出失败。", "Could not export the log."));
                 self.workflow.lines.push(line.clone());
                 self.workflow.exported.push(line);
+            }
         }
-    }
-    fn export_service_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.workflow.busy() || self.workflow.demo { return; }
-        let Some(path) = rfd::FileDialog::new().add_filter(t("日志", "Log"), &["txt"])
-            .set_file_name("steam-frame-headset-service-log.txt").save_file() else { return; };
-        self.sync_fields(cx);
-        self.clear_passwords(window, cx);
-        self.workflow.export_service_log(path);
-        cx.notify();
+        let service_export = self.service_export_receiver.as_ref().and_then(|rx| match rx.try_recv() {
+            Ok(result) => Some(result),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err("保存对话框线程意外结束".into())),
+        });
+        if let Some(result) = service_export {
+            self.service_export_receiver = None;
+            match result {
+                Ok(Some(path)) => {
+                    if self.workflow.busy() {
+                        self.workflow.password.zeroize();
+                        self.workflow.service_export_error(t("当前操作尚未完成，请稍后重试导出。", "An operation is still running; retry the export later.").into());
+                    } else {
+                        self.workflow.export_service_log(path);
+                    }
+                }
+                Ok(None) => self.workflow.password.zeroize(),
+                Err(error) => {
+                    self.workflow.password.zeroize();
+                    self.workflow.service_export_error(format!("{} {error}", t("日志导出失败。", "Could not export the log.")));
+                }
+            }
+        }
     }
     fn card() -> Div {
         div().w_full().rounded_lg().border_1().border_color(rgb(BORDER)).bg(rgb(0xffffff))
@@ -110,7 +167,7 @@ impl FrameView {
 
 impl Render for FrameView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let busy = self.workflow.busy();
+        let busy = self.workflow.busy() || self.service_export_receiver.is_some();
         let scan_running = self.workflow.scan.is_some();
         let scan_progress = self.workflow.scan.as_ref().map(|s| format!("{}/{}", s.progress.load(Ordering::Relaxed), s.total)).unwrap_or_default();
         let mut candidates = div().flex().flex_col().gap_1();

@@ -28,6 +28,7 @@ impl Dashboard {
             let Some(this) = this.upgrade() else { break };
             let interval = this.update(cx, |view, cx| {
                 view.data.poll();
+                view.data.poll_export();
                 view.data.poll_service();
                 view.data.poll_update();
                 if let Some(line) = view.data.settings.poll() { view.data.record(&line); }

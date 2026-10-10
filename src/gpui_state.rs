@@ -45,6 +45,7 @@ struct App {
     next_service_refresh: Instant,
     service_epoch: u64,
     log_dir: Option<PathBuf>,
+    export_receiver: Option<Receiver<Result<Option<PathBuf>, String>>>,
     update_receiver: Option<Receiver<Result<Option<updater::Release>, String>>>,
     available_update: Option<updater::Release>,
     manual_update: bool,
@@ -84,6 +85,7 @@ impl App {
             next_service_refresh: Instant::now(),
             service_epoch: 0,
             log_dir: None,
+            export_receiver: None,
             update_receiver: None,
             available_update: None,
             manual_update: false,
@@ -352,14 +354,8 @@ impl App {
         }
     }
     fn save(&mut self) {
-        let mut dialog = rfd::FileDialog::new()
-            .add_filter(t("日志", "Log"), &["txt"])
-            .set_file_name("steam-frame-log.txt");
-        if let Some(dir) = &self.log_dir {
-            dialog = dialog.set_directory(dir);
-        }
-        if let Some(path) = dialog.save_file() {
-            let text = format!(
+        if self.export_receiver.is_some() { return; }
+        let text = format!(
                 "\u{feff}{}\n{}\n{}\n{}\n{}",
                 t(
                     "Steam Frame 6 GHz 日志（UTC）",
@@ -370,14 +366,41 @@ impl App {
                 t("服务日志", "Service log"),
                 self.service_log
             );
-            match fs::write(&path, text) {
-                Ok(()) => self.record(&format!("已导出全部来源日志：{}", path.display())),
-                Err(e) => self.failure(
-                    t("日志导出失败。", "Could not export the log."),
-                    e.to_string(),
-                    true,
-                ),
+        let dir = self.log_dir.clone();
+        let filter = t("日志", "Log").to_owned();
+        let (tx, rx) = mpsc::channel();
+        self.export_receiver = Some(rx);
+        thread::spawn(move || {
+            let result = std::panic::catch_unwind(|| {
+                let mut dialog = rfd::FileDialog::new()
+                    .add_filter(filter.as_str(), &["txt"])
+                    .set_file_name("steam-frame-log.txt");
+                if let Some(dir) = dir { dialog = dialog.set_directory(dir); }
+                if let Some(path) = dialog.save_file() {
+                    fs::write(&path, text).map_err(|e| e.to_string())?;
+                    Ok(Some(path))
+                } else { Ok(None) }
+            }).unwrap_or_else(|_| Err("保存对话框意外终止".into()));
+            let _ = tx.send(result);
+        });
+    }
+    fn poll_export(&mut self) {
+        match self.export_receiver.as_ref().map(|rx| rx.try_recv()) {
+            Some(Ok(Ok(Some(path)))) => {
+                self.export_receiver = None;
+                self.record(&format!("已导出全部来源日志：{}", path.display()));
             }
+            Some(Ok(Ok(None))) => { self.export_receiver = None; }
+            Some(Ok(Err(error))) => {
+                self.export_receiver = None;
+                self.failure(t("日志导出失败。", "Could not export the log."), error, true);
+            }
+            Some(Err(mpsc::TryRecvError::Disconnected)) => {
+                self.export_receiver = None;
+                self.failure(t("日志导出失败。", "Could not export the log."),
+                    "保存对话框线程意外结束".into(), true);
+            }
+            _ => {}
         }
     }
     fn poll(&mut self) {
