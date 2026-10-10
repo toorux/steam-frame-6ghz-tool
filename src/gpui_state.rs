@@ -23,6 +23,7 @@ struct App {
     status: String,
     status_level: Level,
     log: String,
+    program_log: Option<logs::Session>,
     service_log: String,
     rows: Vec<ui_log::Row>,
     visible_rows: Vec<usize>,
@@ -61,6 +62,7 @@ impl App {
             status: t("请选择适配器。", "Select an adapter.").into(),
             status_level: Level::Info,
             log: String::new(),
+            program_log: None,
             service_log: String::new(),
             rows: vec![],
             visible_rows: vec![],
@@ -91,6 +93,15 @@ impl App {
     }
     fn new(demo: bool) -> Self {
         let mut app = Self::empty(demo);
+        match std::env::current_exe()
+            .map_err(|e| e.to_string())
+            .and_then(|exe| logs::beside(&exe))
+            .and_then(|dir| logs::Session::new_program(&dir))
+        {
+            Ok(session) => app.program_log = Some(session),
+            Err(error) => app.error_popup = Some(format!("{}: {error}",
+                t("无法创建程序日志", "Could not create program log"))),
+        }
         app.record(&format!(
             "{} {}",
             t("Steam Frame 6 GHz 设置工具", "Steam Frame 6 GHz Tool"),
@@ -111,6 +122,11 @@ impl App {
         app
     }
     fn record(&mut self, text: &str) {
+        if let Some(session) = &self.program_log
+            && let Err(error) = session.write(text) {
+            self.error_popup = Some(format!("{}: {error}",
+                t("无法写入程序日志", "Could not write program log")));
+        }
         self.log
             .push_str(&format!("[{}] {text}\n", backend::timestamp()));
         self.logs_dirty = true;

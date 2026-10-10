@@ -47,8 +47,8 @@ The adapter's runtime setting may be lost after a reboot or unplugging it. Auto-
 
 Run the tool and approve the administrator prompt, then click **Enable auto-apply** and confirm. It checks immediately and later on startup or adapter reconnect. The service exits after processing; it does not stay running in the background. The screenshot above shows it enabled at ③.
 
-- Logs are stored in the `logs` folder beside the program. Re-enable the service after moving the program.
-- At most 20 log files are kept. They do not contain Wi-Fi passwords.
+- Program and service logs are stored in the `logs` folder beside the program. Re-enable the service after moving the program.
+- Log files older than 30 days are cleaned up periodically. They do not contain Wi-Fi passwords.
 - An uncertain or interrupted operation pauses auto-apply. A definite failure is logged and is not immediately retried.
 - Removing the service keeps the logs and does not undo the adapter's current US setting.
 - After updating the program, **Update service** appears if the installed service copy differs. Confirming reinstalls it and keeps the logs. It will not reinstall while running or paused.

@@ -304,7 +304,9 @@ impl Render for Dashboard {
                 .accessibility_label(t("切换语言", "Switch language"))
                 .tooltip(t("切换语言", "Switch language"))
                 .on_click(cx.listener(|this, _, _, cx| {
-                    i18n::toggle();
+                    if let Err(error) = i18n::toggle() {
+                        this.data.record(&format!("[ERROR] 无法保存语言设置：{error}"));
+                    }
                     if let Some(frame) = &this.frame { frame.update(cx, |view, cx| view.language_changed(cx)); }
                     cx.notify();
                 })))

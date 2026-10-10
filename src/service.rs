@@ -837,7 +837,7 @@ mod tests {
         let current = logs::read(&run.logs.dir).unwrap();
         assert!(current.contains("错误：模拟失败"));
         assert!(current.contains("Z]"));
-        // Only our logs are pruned; an unrelated file is retained.
+        // Recent logs and unrelated files are retained.
         fs::write(run.logs.dir.join("notes.txt"), "keep").unwrap();
         for _ in 0..25 {
             logs::Session::new(&run.logs.dir)
@@ -846,7 +846,7 @@ mod tests {
                 .unwrap();
         }
         assert!(run.logs.dir.join("notes.txt").exists());
-        assert!(fs::read_dir(&run.logs.dir).unwrap().count() <= 23); // Includes a still-open run and notes.
+        assert_eq!(fs::read_dir(&run.logs.dir).unwrap().count(), 28);
     }
     #[test]
     fn log_reader_rejects_hard_links_and_active_paths_cannot_be_replaced() {

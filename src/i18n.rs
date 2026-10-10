@@ -7,11 +7,9 @@ pub fn is_english() -> bool {
     ENGLISH.load(Ordering::Relaxed)
 }
 
-pub fn toggle() {
+pub fn toggle() -> std::io::Result<()> {
     let english = !ENGLISH.fetch_xor(true, Ordering::Relaxed);
-    if let Err(error) = save_preference(english) {
-        eprintln!("Could not save language preference: {error}");
-    }
+    save_preference(english)
 }
 
 pub fn initialize() {

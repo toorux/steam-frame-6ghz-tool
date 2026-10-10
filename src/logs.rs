@@ -1,7 +1,7 @@
 //! Per-run logs beside the original executable, never relative to the service CWD.
 use crate::{backend, protocol::Result};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     fs::{self, File, OpenOptions},
     hash::{DefaultHasher, Hash, Hasher},
     io::{Read, Write},
@@ -11,11 +11,13 @@ use std::{
     },
     path::{Component, Path, PathBuf, Prefix},
     sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant, SystemTime},
 };
 use windows_sys::Win32::Storage::FileSystem::*;
 
 const MAX_SIZE: u64 = 1_048_576;
-const KEEP_FILES: usize = 20;
+const KEEP_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub fn beside(exe: &Path) -> Result<PathBuf> {
@@ -58,14 +60,15 @@ fn lock_directories(dir: &Path) -> Result<Vec<File>> {
     Ok(handles)
 }
 
-fn files(dir: &Path) -> Result<Vec<PathBuf>> {
+fn files(dir: &Path, prefix: &str) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name
-            .strip_prefix("auto-")
+            .strip_prefix(prefix)
+            .and_then(|s| s.strip_prefix('-'))
             .and_then(|s| s.strip_suffix(".log"))
             .is_some_and(|s| {
                 !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit() || b"-TZ".contains(&c))
@@ -80,11 +83,19 @@ fn files(dir: &Path) -> Result<Vec<PathBuf>> {
 
 pub struct Session {
     pub dir: PathBuf,
+    prefix: &'static str,
     file: RefCell<File>,
+    last_cleanup: Cell<Instant>,
     _directories: Vec<File>,
 }
 impl Session {
     pub fn new(dir: &Path) -> Result<Self> {
+        Self::new_named(dir, "auto")
+    }
+    pub fn new_program(dir: &Path) -> Result<Self> {
+        Self::new_named(dir, "program")
+    }
+    fn new_named(dir: &Path, prefix: &'static str) -> Result<Self> {
         if !local_absolute(dir) {
             return Err("日志目录必须是本地绝对路径，不能含上级路径或数据流".into());
         }
@@ -96,18 +107,21 @@ impl Session {
             Err(e) => return Err(format!("创建日志目录失败：{e}")),
         }
         directories.extend(lock_directories(dir)?);
-        let file = Self::new_file(dir)?;
+        let file = Self::new_file(dir, prefix)?;
+        Self::cleanup(dir)?;
         Ok(Self {
             dir: dir.to_owned(),
+            prefix,
             file: RefCell::new(file),
+            last_cleanup: Cell::new(Instant::now()),
             _directories: directories,
         })
     }
-    fn new_file(dir: &Path) -> Result<File> {
+    fn new_file(dir: &Path, prefix: &str) -> Result<File> {
         let file = loop {
             let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let stamp = backend::timestamp().replace([':', '.'], "");
-            let name = format!("auto-{stamp}-{}-{sequence:020}.log", std::process::id());
+            let name = format!("{prefix}-{stamp}-{}-{sequence:020}.log", std::process::id());
             // Never append to a pre-existing, potentially attacker-controlled file.
             match OpenOptions::new()
                 .write(true)
@@ -120,17 +134,31 @@ impl Session {
                 Err(e) => return Err(format!("创建执行日志失败：{e}")),
             }
         };
-        let paths = files(dir)?;
-        for old in paths.iter().take(paths.len().saturating_sub(KEEP_FILES)) {
-            // Active logs are locked; remove only our named files, never recurse.
-            let _ = fs::remove_file(old);
-        }
         Ok(file)
     }
+    fn cleanup(dir: &Path) -> Result<()> {
+        let now = SystemTime::now();
+        for path in files(dir, "auto")?.into_iter().chain(files(dir, "program")?) {
+            let Ok(metadata) = fs::symlink_metadata(&path) else { continue };
+            if metadata.is_file()
+                && metadata.modified().ok()
+                    .and_then(|modified| now.duration_since(modified).ok())
+                    .is_some_and(|age| age >= KEEP_AGE)
+            {
+                // An active file stays locked; retry it at the next cleanup.
+                let _ = fs::remove_file(path);
+            }
+        }
+        Ok(())
+    }
     pub fn write(&self, text: &str) -> Result<()> {
+        if self.last_cleanup.get().elapsed() >= CLEANUP_INTERVAL {
+            Self::cleanup(&self.dir)?;
+            self.last_cleanup.set(Instant::now());
+        }
         let mut file = self.file.borrow_mut();
         if file.metadata().map_err(|e| e.to_string())?.len() >= MAX_SIZE {
-            *file = Self::new_file(&self.dir)?;
+            *file = Self::new_file(&self.dir, self.prefix)?;
         }
         writeln!(file, "[{}] {text}", backend::timestamp()).map_err(|e| e.to_string())?;
         file.sync_data().map_err(|e| e.to_string())
@@ -142,7 +170,7 @@ pub fn read(dir: &Path) -> Result<String> {
         return Ok(String::new());
     }
     let _directories = lock_directories(dir)?;
-    let paths = files(dir)?;
+    let paths = files(dir, "auto")?;
     let mut text = String::new();
     for path in &paths {
         let file = OpenOptions::new()
@@ -177,7 +205,7 @@ pub fn revision(dir: &Path) -> Result<u64> {
     dir.hash(&mut hash);
     if dir.try_exists().map_err(|e| e.to_string())? {
         let _directories = lock_directories(dir)?;
-        for path in files(dir)? {
+        for path in files(dir, "auto")? {
             let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
             path.hash(&mut hash);
             metadata.len().hash(&mut hash);
@@ -209,5 +237,45 @@ mod tests {
         ] {
             assert!(!local_absolute(Path::new(path)), "{path}");
         }
+    }
+    #[test]
+    fn cleanup_removes_only_named_logs_older_than_30_days() {
+        let dir = std::env::temp_dir().join(format!("steam-frame-log-test-{}-{}",
+            std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir(&dir).unwrap();
+        let old = dir.join("auto-20260101T000000Z-1-00000000000000000000.log");
+        let old_program = dir.join("program-20260101T000000Z-1-00000000000000000000.log");
+        let fresh = dir.join("auto-20260101T000000Z-1-00000000000000000001.log");
+        let other = dir.join("other.log");
+        let file = File::create(&old).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(
+            SystemTime::now() - KEEP_AGE - Duration::from_secs(60))).unwrap();
+        drop(file);
+        let file = File::create(&old_program).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(
+            SystemTime::now() - KEEP_AGE - Duration::from_secs(60))).unwrap();
+        drop(file);
+        File::create(&fresh).unwrap();
+        File::create(&other).unwrap();
+        Session::cleanup(&dir).unwrap();
+        assert!(!old.exists());
+        assert!(!old_program.exists());
+        assert!(fresh.exists() && other.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn program_logs_do_not_appear_in_service_log_reader() {
+        let dir = std::env::temp_dir().join(format!("steam-frame-program-log-test-{}-{}",
+            std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+        let program = Session::new_program(&dir).unwrap();
+        program.write("program only").unwrap();
+        assert!(read(&dir).unwrap().is_empty());
+        let service = Session::new(&dir).unwrap();
+        service.write("service only").unwrap();
+        let text = read(&dir).unwrap();
+        assert!(text.contains("service only"));
+        assert!(!text.contains("program only"));
+        drop((program, service));
+        fs::remove_dir_all(dir).unwrap();
     }
 }
