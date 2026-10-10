@@ -1,0 +1,2 @@
+assets/*.sh text eol=lf
+assets/*.service text eol=lf

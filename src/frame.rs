@@ -606,11 +606,12 @@ fn reg_is_us(output: &str) -> bool {
 fn watcher_paths() -> (&'static str, &'static str) {
     ("/var/lib/steam-frame-6ghz-tool/regdom-watch.sh", "/etc/systemd/system/steam-frame-regdom-watch.service")
 }
-fn watcher_hash(content: &str) -> String { format!("{:x}", Sha256::digest(content.as_bytes())) }
+fn watcher_content(content: &str) -> String { content.replace("\r\n", "\n") }
+fn watcher_hash(content: &str) -> String { format!("{:x}", Sha256::digest(watcher_content(content).as_bytes())) }
 fn watcher_probe() -> String {
     let (script, unit) = watcher_paths();
     format!(r#"set -eu
-command -v iw >/dev/null; command -v stdbuf >/dev/null; command -v awk >/dev/null; command -v sha256sum >/dev/null; command -v systemctl >/dev/null; command -v findmnt >/dev/null
+command -v iw >/dev/null; command -v stdbuf >/dev/null; command -v awk >/dev/null; command -v tr >/dev/null; command -v sha256sum >/dev/null; command -v systemctl >/dev/null; command -v findmnt >/dev/null
 test "$(findmnt -T /var -n -o TARGET)" = /var
 grep -Fxq '/etc/systemd/system/*.service' /usr/lib/rauc/atomic-update-keep.conf
 grep -Fxq '/etc/systemd/system/*.wants/**' /usr/lib/rauc/atomic-update-keep.conf
@@ -619,11 +620,11 @@ test ! -L {script}
 test ! -L {unit}
 if test -e {script}; then
   test -f {script}
-  grep -Fxq '# Managed by Steam Frame 6 GHz Tool. Do not edit in place.' {script} || {{ echo 'Existing watcher script is not managed by this program.' >&2; exit 1; }}
+  tr -d '\r' < {script} | grep -Fxq '# Managed by Steam Frame 6 GHz Tool. Do not edit in place.' || {{ echo 'Existing watcher script is not managed by this program.' >&2; exit 1; }}
 fi
 if test -e {unit}; then
   test -f {unit}
-  grep -Fxq '# Managed by Steam Frame 6 GHz Tool. Do not edit in place.' {unit} || {{ echo 'Existing watcher service is not managed by this program.' >&2; exit 1; }}
+  tr -d '\r' < {unit} | grep -Fxq '# Managed by Steam Frame 6 GHz Tool. Do not edit in place.' || {{ echo 'Existing watcher service is not managed by this program.' >&2; exit 1; }}
 fi
 if test -e {script} && test -e {unit} && test "$(sha256sum {script} | cut -d ' ' -f1)" = {script_hash} && test "$(sha256sum {unit} | cut -d ' ' -f1)" = {unit_hash} && systemctl is-enabled --quiet {service} && systemctl is-active --quiet {service}; then
   printf ready
@@ -675,7 +676,7 @@ systemctl is-enabled --quiet {service}
 systemctl is-active --quiet {service}
 printf 'Automatic regulatory watcher installed and running.'"#,
         script = shell_quote(script), unit = shell_quote(unit),
-        script_content = shell_quote(WATCH_SCRIPT), unit_content = shell_quote(WATCH_UNIT),
+        script_content = shell_quote(&watcher_content(WATCH_SCRIPT)), unit_content = shell_quote(&watcher_content(WATCH_UNIT)),
         script_hash = shell_quote(&watcher_hash(WATCH_SCRIPT)),
         unit_hash = shell_quote(&watcher_hash(WATCH_UNIT)), service = WATCH_SERVICE)
 }
@@ -902,6 +903,19 @@ mod tests {
         assert!(watcher_install().contains("systemctl is-active --quiet"));
         assert!(WATCH_SCRIPT.contains("stdbuf -oL iw event -T"));
         assert!(WATCH_SCRIPT.contains("attempts >= 3"));
+    }
+    #[test]
+    fn watcher_payload_uses_unix_line_endings_even_from_crlf_assets() {
+        let crlf = "# Managed by Steam Frame 6 GHz Tool. Do not edit in place.\r\nset -eu\r\n";
+        let normalized = watcher_content(crlf);
+        assert_eq!(normalized, crlf.replace("\r\n", "\n"));
+        assert!(!normalized.contains('\r'));
+        assert_eq!(watcher_hash(crlf), watcher_hash(&normalized));
+        assert!(!watcher_content(WATCH_SCRIPT).contains('\r'));
+        assert!(!watcher_content(WATCH_UNIT).contains('\r'));
+        assert!(watcher_probe().contains("tr -d '\\r'"));
+        let install = watcher_install();
+        assert!(!install.contains("\r"));
     }
     #[test]
     #[ignore = "Read-only check of local network and optional FRAME_TEST_IP SSH handshake"]
