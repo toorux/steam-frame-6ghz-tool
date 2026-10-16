@@ -423,6 +423,9 @@ pub(crate) fn open(demo: bool) {
         colors.button_primary_foreground = rgb(0xffffff).into();
         colors.border = rgb(BORDER).into();
         theme.tokens = theme.colors.into();
+        // Windows UI font overrides can contain a visible space glyph (issue #5).
+        theme.font_family = "Segoe UI".into();
+        Theme::sync_base(cx);
         Theme::set_scrollbar_mode(ScrollbarMode::Always, cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(720.), px(840.)), cx))),
