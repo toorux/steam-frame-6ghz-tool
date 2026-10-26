@@ -881,6 +881,26 @@ mod tests {
         assert!(changed);
     }
     #[test]
+    fn watcher_assets_use_unix_line_endings() {
+        for content in [WATCH_SCRIPT, WATCH_UNIT] {
+            assert!(!content.contains('\r'), "watcher assets must be checked out with LF line endings");
+        }
+    }
+    #[test]
+    fn watcher_installs_and_probes_the_same_normalized_asset_hashes() {
+        let install = watcher_install();
+        let probe = watcher_probe();
+        for content in [WATCH_SCRIPT, WATCH_UNIT] {
+            let normalized = watcher_content(content);
+            let crlf = normalized.replace('\n', "\r\n");
+            let expected_hash = format!("{:x}", Sha256::digest(normalized.as_bytes()));
+            assert_eq!(watcher_hash(&crlf), expected_hash);
+            assert!(install.contains(&shell_quote(&normalized)));
+            assert!(install.contains(&expected_hash));
+            assert!(probe.contains(&expected_hash));
+        }
+    }
+    #[test]
     fn automatic_watcher_is_idempotent_and_reports_install_failures() {
         let mut changed = false;
         let mut calls = 0;
