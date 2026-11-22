@@ -54,13 +54,25 @@ KbdInteractiveAuthentication no
     if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log | Write-Host }
     throw
 } finally {
-    if ($server -and !$server.HasExited) {
-        Stop-Process -InputObject $server
+    if ($server -and !$server.WaitForExit(2000)) {
+        Stop-Process -InputObject $server -ErrorAction SilentlyContinue
         [void]$server.WaitForExit(2000)
     }
     Remove-Item -LiteralPath Env:FRAME_SSH_TEST_ADDRESS,Env:FRAME_SSH_TEST_FINGERPRINT -ErrorAction SilentlyContinue
     $resolved = (Resolve-Path -LiteralPath $root.FullName).Path
     if ($resolved -eq (Join-Path $temp $name)) {
-        Remove-Item -LiteralPath $resolved -Recurse -Force
+        # Windows can still hold an OpenSSH DLL briefly after the handshake ends.
+        for ($attempt = 1; $attempt -le 8; $attempt++) {
+            try {
+                Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction Stop
+                break
+            } catch {
+                if ($attempt -eq 8) {
+                    Write-Warning "Could not remove the OpenSSH fixture directory: $_"
+                } else {
+                    Start-Sleep -Milliseconds 500
+                }
+            }
+        }
     }
 }
