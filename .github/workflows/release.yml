@@ -30,6 +30,8 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: 1.98.0-x86_64-pc-windows-msvc
       CARGO_TERM_COLOR: always
+      VCPKGRS_NO_LIBSSH2: '1'
+      OPENSSL_NO_VENDOR: '0'
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
@@ -59,6 +61,9 @@ jobs:
 
       - name: Build Windows x64
         run: cargo build --release --locked
+
+      - name: Test SSH handshake with a modern OpenSSH server
+        run: ./scripts/test-ssh-handshake.ps1
 
       - name: Publish release
         env:

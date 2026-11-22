@@ -352,8 +352,12 @@ fn trust_record(hosts: &mut KnownHosts, ip: Ipv4Addr, fingerprint: &str, previou
     Ok(true)
 }
 fn connect(ip: Ipv4Addr) -> Result<(Session, String), String> {
+    connect_ssh(SocketAddr::new(IpAddr::V4(ip), 22))
+}
+
+fn connect_ssh(address: SocketAddr) -> Result<(Session, String), String> {
     let stream =
-        TcpStream::connect_timeout(&SocketAddr::new(IpAddr::V4(ip), 22), Duration::from_secs(3))
+        TcpStream::connect_timeout(&address, Duration::from_secs(3))
             .map_err(|e| {
                 if i18n::is_english() {
                     format!("SSH connection failed: {e}")
@@ -917,6 +921,17 @@ mod tests {
         let install = watcher_install();
         assert!(!install.contains("\r"));
     }
+    #[test]
+    #[ignore = "Requires the loopback OpenSSH fixture"]
+    fn openssh_modern_handshake() {
+        let address: SocketAddr = std::env::var("FRAME_SSH_TEST_ADDRESS").unwrap().parse().unwrap();
+        assert!(address.ip().is_loopback(), "expected a loopback fixture");
+        let (session, fingerprint) = connect_ssh(address).expect("modern SSH handshake");
+        assert_eq!(session.methods(ssh2::MethodType::Kex), Some("curve25519-sha256"));
+        assert_eq!(session.methods(ssh2::MethodType::HostKey), Some("ssh-ed25519"));
+        assert_eq!(fingerprint, std::env::var("FRAME_SSH_TEST_FINGERPRINT").unwrap());
+    }
+
     #[test]
     #[ignore = "Read-only check of local network and optional FRAME_TEST_IP SSH handshake"]
     fn local_network_snapshot() {
